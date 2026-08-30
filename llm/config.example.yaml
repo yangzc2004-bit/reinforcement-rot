@@ -10,18 +10,25 @@ model:
   base_url: "https://api.deepseek.com/v1"      # <- your endpoint
   temperature: 0.0
   max_tokens: 64
+  timeout: 120            # per-request timeout (s); 429/5xx/timeout retried
+  max_retries: 5          # exponential backoff with jitter
+  max_calls: null         # COST FUSE: stop the run cleanly after N API calls
+  log_path: null          # optional per-call JSONL log (tokens, latency, errors)
   # For an offline smoke test of the whole pipeline (no API, no cost):
   #   name: "mock"
 
 maze:
-  size: 9               # grid is size x size cells
-  detour_openings: 4    # extra wall removals creating detour loops
-  ring: true            # guarantee one ring corridor near the start
+  size: 15              # grid is size x size cells
+  delta: 4              # detour length overdose vs the parallel backbone segment.
+                        # MUST BE EVEN: on a bipartite grid two routes between
+                        # the same endpoints always differ by an even number.
+  ring: true            # dangling single-neck ring (entrance == exit == neck)
+  min_shortest: 30      # designed shortest path S->G (BFS-verified)
   seed: 0
 
 b1:
   n_mazes: 20           # capability gate: single agent, NO shared memory
-  max_steps: 200
+  max_steps: 300
   breadcrumbs: true     # agent sees its own visited marks (individual memory)
   # gate: pass when no-memory success rate is in [85%, 90%]
 
@@ -29,14 +36,18 @@ b2:
   n_mazes: 5            # existence: n_agents sequentially share one memory
   n_agents: 4
   n_rounds: 10
-  lams: [1.0, 0.95]     # evaporation off vs on (the intervention contrast)
-  top_k: 5              # retrieval sharpness (LLM analog of beta)
-  max_steps: 200
+  # evaporation is PER-EPISODE; specify the interpretable per-ROUND retention:
+  #   lam_episode = round_retention ** (1 / n_agents)
+  # e.g. n_agents=4: round_retention 0.85 -> lam_episode ~ 0.960
+  round_retentions: [1.0, 0.85]
+  top_k: 5              # retrieval candidate-set truncation (NOT beta -> inf;
+                        # effective follow sharpness is measured by calib_beta)
+  write_rule: "success_only"   # none | universal | success_only | efficient_success_only | agent_authored
+  max_steps: 300
   breadcrumbs: true
-  # Write rule (B5 ablation axis — {mechanical vs authored} x {success vs all}):
-  #   none                   no writes (individual runs)
-  #   success_only           mechanical path distill, success-gated
-  #   efficient_success_only mechanical, only <= 1.25x shortest paths
-  #   agent_authored         agent writes natural-language notes, success-gated
-  #   universal              agent authors notes for every junction, win or lose
-  write_rule: "agent_authored"
+
+calib:
+  ratios: [1.0, 1.5, 2.0, 3.0, 5.0, 8.0]   # weight ratios for beta_eff probe
+  n_trials: 30          # trials per ratio (more -> tighter CI)
+  n_bootstrap: 200
+  seed: 0
