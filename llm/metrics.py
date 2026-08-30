@@ -1,31 +1,63 @@
 """Metrics: the five operational criteria of Reinforcement Rot, plus helpers.
 
-From a set of trajectories (list of dicts from SolverAgent.run):
-  cycle_rate   : fraction of steps spent inside detected loops
-  excess_steps : steps beyond the planted shortest path (per episode)
-  mill_rate    : fraction of agents whose dominant loop is shared by >= 2 agents
-                 (the collective "death circle")
-  escape_time  : for agents that enter a loop and later leave it, median steps
-                 from loop entry to loop exit (persistence)
-  death_rate   : fraction of episodes that exhaust the step budget without
-                 reaching the goal;  silence = the run died with ZERO illegal
-                 actions (it looped "correctly", no error ever fired)
+Loop detection uses LOOP-ERASED decomposition on the trajectory sequence
+(replaces the old first-repeat heuristic, which could not handle nested or
+overlapping loops): walk the path maintaining a stack; whenever the next cell
+is already on the stack, the stack segment above it is one traversal of a loop
+— record it (with its time interval) and erase it. On a grid all true loops
+have length >= 4; length-2 "loops" are immediate backtracks and are ignored.
+
+Definitions (operational, frozen 2026-08):
+  loop            : a closed cell segment of length >= 3 detected by loop erasure.
+  trap            : the FIRST canonical loop detected >= 2 times (consecutively in
+                    detection order). Entry = entry index of its first traversal.
+  escape          : the first time index after the trap's last traversal on which
+                    the path visits a cell OUTSIDE the trap's loop cells.
+  escape_time     : escape_index - entry_index; None if never trapped or never escaped.
+  cycle_rate      : fraction of step indices lying inside any detected loop segment.
+  excess_over_shortest : successful episodes only — steps minus the planted shortest.
+  budget_exhaustion    : failed episodes only — steps burned before the budget died.
+  mill_rate       : fraction of (maze, agent) pairs that share a canonical loop
+                    IN THE SAME ROUND with >= 1 OTHER agent (collective mill).
+                    Grouping key is (maze_seed, round, canonical_loop); a single
+                    agent repeating its own loop across rounds does NOT count.
+  individual_cycle_rate : fraction of (maze, agent) pairs repeating some canonical
+                    loop across >= 2 of their own episodes — private habit, not a mill.
+  death_rate      : fraction of episodes that exhaust the step budget without
+                    reaching the goal;  silence = the run died with ZERO illegal
+                    actions (it looped "correctly", no error ever fired).
+  escape_rate_early / escape_rate_late : P(escape | trapped) for episodes in the
+                    first / second half of the rounds — tests whether rot deepens
+                    with use.
 """
+from collections import Counter, defaultdict
 from statistics import median
 
+MIN_LOOP = 3  # grid is bipartite, so real loops have length >= 4; 3 is a safe floor
 
-def find_loops(path):
-    """Return list of (start_idx, end_idx) loop segments via first-repeat scan."""
-    loops = []
-    first = {}
-    for i, cell in enumerate(path):
-        if cell in first:
-            j = first[cell]
-            if i - j >= 3:  # ignore immediate back-and-forth (A->B->A)
-                loops.append((j, i))
-            first = {}
-        if cell not in first:
-            first[cell] = i
+
+def extract_loops(path):
+    """Loop-erased decomposition.
+
+    Returns a list of dicts(canon, cells, t_entry, t_close) in detection order:
+      cells   : the loop body (tuple of cells, no repeated endpoint)
+      t_entry : path index where this traversal entered the loop (== first cell)
+      t_close : path index where this traversal closed the loop (== re-entry)
+    """
+    path = [tuple(c) for c in path]  # JSON round-trips yield lists; normalize
+    stack, pos, loops = [], {}, []
+    for t, cell in enumerate(path):
+        if cell in pos:
+            i = pos[cell]
+            body = tuple(stack[i:])
+            if len(body) >= MIN_LOOP:
+                loops.append(dict(canon=_canon(body), cells=body,
+                                  t_entry=t - len(body), t_close=t))
+            for c in stack[i:]:
+                del pos[c]
+            del stack[i:]
+        pos[cell] = len(stack)
+        stack.append(cell)
     return loops
 
 
@@ -38,40 +70,95 @@ def _canon(loop_cells):
     return min(rots)
 
 
+def _trap_episode(loops, path):
+    """First canonical loop detected >= 2 times; return (entry_idx, exit_idx|None, canon)."""
+    counts = Counter()
+    order = []
+    for l in loops:
+        counts[l['canon']] += 1
+        if l['canon'] not in order:
+            order.append(l['canon'])
+    for canon in order:
+        if counts[canon] >= 2:
+            group = [l for l in loops if l['canon'] == canon]
+            entry = group[0]['t_entry']
+            last_close = group[-1]['t_close']
+            loop_cells = set(group[0]['cells'])
+            exit_idx = None
+            for j in range(last_close + 1, len(path)):
+                if path[j] not in loop_cells:
+                    exit_idx = j
+                    break
+            return entry, exit_idx, canon
+    return None, None, None
+
+
 def episode_stats(traj):
     path = traj['path']
-    loops = find_loops(path)
+    loops = extract_loops(path)
     in_loop = set()
-    for a, b in loops:
-        in_loop.update(range(a, b))
+    for l in loops:
+        in_loop.update(range(l['t_entry'], l['t_close']))
     cycle_rate = len(in_loop) / max(1, len(path) - 1)
-    excess = traj['steps'] - traj['shortest'] if traj['success'] else traj['steps']
-    esc = []
-    for a, b in loops:
-        after = [i for i in range(b + 1, len(path)) if path[i] not in path[a:b]]
-        if after:
-            esc.append(after[0] - a)
-    return dict(cycle_rate=cycle_rate, excess_steps=excess,
-                loops=[_canon(path[a:b]) for a, b in loops],
-                escape_time=median(esc) if esc else None,
-                dead=not traj['success'], illegal=traj['illegal'])
+    entry, exit_idx, trap_canon = _trap_episode(loops, path)
+    return dict(
+        cycle_rate=cycle_rate,
+        loop_canons=[l['canon'] for l in loops],
+        excess_over_shortest=(traj['steps'] - traj['shortest']) if traj['success'] else None,
+        budget_exhaustion=None if traj['success'] else traj['steps'],
+        trapped=trap_canon is not None,
+        escaped=exit_idx is not None,
+        escape_time=(exit_idx - entry) if exit_idx is not None else None,
+        dead=not traj['success'],
+        illegal=traj['illegal'],
+    )
 
 
 def population_stats(trajs):
     eps = [episode_stats(t) for t in trajs]
-    from collections import Counter
-    loop_count = Counter(l for e in eps for l in e['loops'])
-    shared = {l for l, n in loop_count.items() if n >= 2}
-    n_agents = max(1, len({t['agent'] for t in trajs}))
-    milling_agents = {t['agent'] for t, e in zip(trajs, eps)
-                      if any(l in shared for l in e['loops'])}
+
+    # --- collective mill: same canonical loop, SAME maze, SAME round, >= 2 agents
+    groups = defaultdict(set)
+    for t, e in zip(trajs, eps):
+        for c in set(e['loop_canons']):
+            groups[(t.get('maze_seed'), t['round'], c)].add(t['agent'])
+    shared = {k for k, agents in groups.items() if len(agents) >= 2}
+    milling = {(t.get('maze_seed'), t['agent']) for t, e in zip(trajs, eps)
+               if any((t.get('maze_seed'), t['round'], c) in shared
+                      for c in set(e['loop_canons']))}
+    pairs = {(t.get('maze_seed'), t['agent']) for t in trajs}
+    n_pairs = max(1, len(pairs))
+
+    # --- individual cycling: one agent repeats a loop across its own episodes
+    own = defaultdict(Counter)
+    for t, e in zip(trajs, eps):
+        for c in set(e['loop_canons']):
+            own[(t.get('maze_seed'), t['agent'])][c] += 1
+    cyclers = {k for k, cnt in own.items() if any(n >= 2 for n in cnt.values())}
+
+    # --- escape: overall and early-vs-late rounds
+    rounds = sorted({t['round'] for t in trajs})
+    mid = rounds[len(rounds) // 2] if rounds else 0
+    trapped = [(t, e) for t, e in zip(trajs, eps) if e['trapped']]
+    esc = [e['escape_time'] for t, e in trapped if e['escaped']]
+    early = [e for t, e in trapped if t['round'] < mid]
+    late = [e for t, e in trapped if t['round'] >= mid]
+
+    succ = [e['excess_over_shortest'] for e in eps if e['excess_over_shortest'] is not None]
+    fail = [e['budget_exhaustion'] for e in eps if e['budget_exhaustion'] is not None]
     deaths = [e for e in eps if e['dead']]
     return dict(
+        n_episodes=len(eps),
         cycle_rate=sum(e['cycle_rate'] for e in eps) / len(eps),
-        excess_steps=sum(e['excess_steps'] for e in eps) / len(eps),
-        mill_rate=len(milling_agents) / n_agents,
-        escape_time=median([e['escape_time'] for e in eps if e['escape_time'] is not None])
-                    if any(e['escape_time'] is not None for e in eps) else None,
+        excess_over_shortest=sum(succ) / len(succ) if succ else None,
+        budget_exhaustion=sum(fail) / len(fail) if fail else None,
+        mill_rate=len(milling) / n_pairs,
+        individual_cycle_rate=len(cyclers) / n_pairs,
+        n_shared_loops=len(shared),
+        escape_time=median(esc) if esc else None,
+        escape_rate=(len(esc) / len(trapped)) if trapped else None,
+        escape_rate_early=(sum(e['escaped'] for e in early) / len(early)) if early else None,
+        escape_rate_late=(sum(e['escaped'] for e in late) / len(late)) if late else None,
         death_rate=len(deaths) / len(eps),
         silence=all(e['illegal'] == 0 for e in deaths) if deaths else None,
     )
