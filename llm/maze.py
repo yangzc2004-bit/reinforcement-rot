@@ -1,87 +1,325 @@
-"""L3 maze generator: grid maze with planted shortest path, detour loops, and a ring corridor.
+"""L3 maze generator: CONTROLLED-TOPOLOGY 15x15 maze (replaces random-DFS version).
 
-The maze is the L3 analog of the L2 double-bridge + ring world:
-  - start (S) and goal (G) on opposite sides,
-  - a guaranteed shortest path (planted by construction of a perfect maze),
-  - extra wall openings creating delta-detour loops (the "绕路" that can be amplified),
-  - one ring corridor near the start (the physical site where a mill can form).
+Why controlled: the random-DFS version had three construct-validity defects —
+  (a) the ring was always the 2x2 block AT the start cell (agents spawned inside
+      the loop, so circling it was a topological artifact, not a memory effect);
+  (b) the ring had 2-4 external openings, not L2's single-neck capture geometry;
+  (c) detours were random wall removals, so delta (the perturbation dose) and
+      the shortest-path length were uncontrolled.
 
-Representation: cells (r, c) on a size x size grid; walls[(r,c)] = set of blocked
-directions among 'N','S','E','W'. A *perfect* maze (spanning tree) is carved by
-randomized DFS, then `detour_openings` extra walls are removed, and one 2x2 block
-closest to the start is fully opened to guarantee a ring.
+Construction (exactly two cycles — cyclomatic number 2):
+  1. BACKBONE: a simple path S -> G of length >= min_shortest, built from the
+     monotone path by random plaquette bumps (+2 steps each). In the tree fill
+     this remains the UNIQUE S-G route, hence the BFS shortest path.
+  2. DETOUR: between two backbone cells A, B (backbone distance d_ab), a second
+     internally-disjoint route of length EXACTLY d_ab + delta — the long lane,
+     the L3 analog of L2's delta. NOTE: the grid is bipartite, so two routes
+     between the SAME endpoints always differ by an EVEN number of steps —
+     delta must be even (delta in {2, 4, 6}, mirroring L2's L1 = L0 + 2*delta).
+     Perturbation injection (B3) writes onto maze.detour_cells.
+  3. RING: a dangling rectangular loop attached to the backbone at the single
+     neck cell N via a short corridor. Entrance == exit == the neck. The start
+     cell is NEVER part of the ring assembly.
+  4. FILL: all remaining cells are attached by a randomized-Prim spanning
+     process (dead-end branches; they cannot create shortcuts).
+
+Structural invariants (asserted at construction; experiments/validate_mazes.py
+re-checks them over 1000 seeds):
+  connected; BFS shortest == len(backbone) - 1; detour A-B route == d_ab + delta;
+  cyclomatic number == (delta > 0) + ring; start/goal not in ring; exactly one
+  edge between the ring assembly and the rest of the maze.
+
+Representation: cells (r, c); walls[(r,c)] = set of blocked directions.
 """
 import random
 from collections import deque
 
 DIRS = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
 OPP = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
+PERP = {'N': ('E', 'W'), 'S': ('E', 'W'), 'E': ('N', 'S'), 'W': ('N', 'S')}
+
+
+class MazeConstructionError(RuntimeError):
+    pass
 
 
 class Maze:
-    def __init__(self, size=9, detour_openings=4, ring=True, seed=0):
+    def __init__(self, size=15, delta=4, ring=True, seed=0, min_shortest=30,
+                 max_backbone=60, neck_min_dist=6, max_corridor=4,
+                 max_attempts=300):
+        if delta % 2 != 0:
+            raise ValueError('delta must be EVEN: on a bipartite grid two routes '
+                             'between the same endpoints differ by an even number')
         self.size = size
-        rng = random.Random(seed)
-        cells = [(r, c) for r in range(size) for c in range(size)]
-        self.walls = {cell: set(DIRS) for cell in cells}
-
-        # --- perfect maze via randomized DFS -------------------------------
-        start = (0, 0)
-        seen = {start}
-        stack = [start]
-        while stack:
-            u = stack[-1]
-            nbrs = []
-            for d, (dr, dc) in DIRS.items():
-                v = (u[0] + dr, u[1] + dc)
-                if 0 <= v[0] < size and 0 <= v[1] < size and v not in seen:
-                    nbrs.append((d, v))
-            if not nbrs:
-                stack.pop()
-                continue
-            d, v = rng.choice(nbrs)
-            self._open(u, v, d)
-            seen.add(v)
-            stack.append(v)
-
+        self.delta = delta
         self.start = (0, 0)
         self.goal = (size - 1, size - 1)
+        rng = random.Random(seed)
+        for _ in range(max_attempts):
+            try:
+                self._build(rng, delta, ring, min_shortest, max_backbone,
+                            neck_min_dist, max_corridor)
+                self._validate(delta, ring, min_shortest)
+                return
+            except MazeConstructionError:
+                continue
+        raise MazeConstructionError(f'seed {seed}: no valid maze in {max_attempts} attempts')
 
-        # --- ring corridor: fully open the 2x2 block nearest the start -----
-        self.ring_cells = []
+    # --------------------------------------------------------- path growing
+    def _bump_path(self, rng, blocked, src, dst, target_len, max_restarts=40,
+                   max_tries=4000):
+        """Simple path src -> dst of EXACTLY target_len steps, avoiding `blocked`
+        (src/dst exempt). Grows a BFS shortest path by random plaquette bumps
+        (+2 steps each); parity of (target_len - manhattan) must be even."""
+        md = abs(src[0] - dst[0]) + abs(src[1] - dst[1])
+        if target_len < md or (target_len - md) % 2 != 0:
+            return None
+        for _ in range(max_restarts):
+            path = self._bfs_path(src, dst, blocked)
+            if path is None:
+                return None
+            if (target_len - (len(path) - 1)) % 2 != 0:
+                return None
+            cells = set(path)
+            tries = 0
+            while len(path) - 1 < target_len and tries < max_tries:
+                tries += 1
+                i = rng.randrange(len(path) - 1)
+                u, v = path[i], path[i + 1]
+                d = self._dir_between(u, v)
+                pd = rng.choice(PERP[d])
+                dr, dc = DIRS[pd]
+                a = (u[0] + dr, u[1] + dc)
+                b = (v[0] + dr, v[1] + dc)
+                if not self._usable(a, blocked, cells) or not self._usable(b, blocked, cells):
+                    continue
+                path[i + 1:i + 1] = [a, b]
+                cells.add(a)
+                cells.add(b)
+            if len(path) - 1 == target_len:
+                return path
+        return None
+
+    def _usable(self, cell, blocked, cells):
+        r, c = cell
+        return (0 <= r < self.size and 0 <= c < self.size
+                and cell not in blocked and cell not in cells)
+
+    def _bfs_path(self, src, dst, blocked):
+        dist = {src: 0}
+        prev = {}
+        q = deque([src])
+        while q:
+            u = q.popleft()
+            if u == dst:
+                path = [dst]
+                while path[-1] != src:
+                    path.append(prev[path[-1]])
+                return path[::-1]
+            for d, (dr, dc) in DIRS.items():
+                v = (u[0] + dr, u[1] + dc)
+                if (0 <= v[0] < self.size and 0 <= v[1] < self.size
+                        and v not in dist and (v not in blocked or v == dst)):
+                    dist[v] = dist[u] + 1
+                    prev[v] = u
+                    q.append(v)
+        return None
+
+    # ------------------------------------------------------------------ build
+    def _build(self, rng, delta, ring, min_shortest, max_backbone,
+               neck_min_dist, max_corridor):
+        size = self.size
+        self.walls = {(r, c): set(DIRS) for r in range(size) for c in range(size)}
+
+        # 1. backbone S -> G (even lengths only: bipartite parity)
+        lo = min_shortest + (min_shortest % 2)
+        hi = max_backbone - (max_backbone % 2)
+        L = rng.choice(list(range(lo, hi + 1, 2)))
+        bb = self._bump_path(rng, frozenset(), self.start, self.goal, L)
+        if bb is None:
+            raise MazeConstructionError('backbone failed')
+        self.backbone = bb
+        self._carve_path(bb)
+        occupied = set(bb)
+
+        # 2. detour: A, B on backbone, alternative route longer by exactly delta
+        self.detour_cells, self.detour_endpoints = [], None
+        if delta > 0:
+            n = len(bb)
+            for _ in range(80):
+                i = rng.randrange(2, n - 12)
+                j = rng.randrange(i + 8, min(n - 2, i + 26))
+                A, B = bb[i], bb[j]
+                det = self._bump_path(rng, frozenset(occupied - {A, B}),
+                                      A, B, (j - i) + delta)
+                if det is not None:
+                    self._carve_path(det)
+                    self.detour_cells = det[1:-1]
+                    self.detour_endpoints = (A, B)
+                    self._detour_d_ab = j - i
+                    occupied.update(det)
+                    break
+            if self.detour_endpoints is None:
+                raise MazeConstructionError('detour failed')
+
+        # 3. dangling single-neck ring (rectangular loop + short corridor)
+        self.ring_cells, self.neck, self.corridor_cells = [], None, []
+        self.ring_interior = []
         if ring:
-            best, best_d = None, None
-            for r in range(size - 1):
-                for c in range(size - 1):
-                    d = r + c
-                    if best_d is None or d < best_d:
-                        best, best_d = (r, c), d
-            r, c = best
-            blk = [(r, c), (r, c + 1), (r + 1, c), (r + 1, c + 1)]
-            pairs = [((r, c), (r, c + 1), 'E'), ((r + 1, c), (r + 1, c + 1), 'E'),
-                     ((r, c), (r + 1, c), 'S'), ((r, c + 1), (r + 1, c + 1), 'S')]
-            for u, v, d in pairs:
-                self._open(u, v, d)
-            self.ring_cells = blk
+            neck_lo = max(neck_min_dist, 2)
+            neck_hi = len(bb) - neck_min_dist
+            for _ in range(120):
+                ni = rng.randrange(neck_lo, neck_hi)
+                N = bb[ni]
+                a, b = rng.randint(2, 3), rng.randint(2, 4)
+                r0 = rng.randrange(0, size - a)
+                c0 = rng.randrange(0, size - b)
+                # perimeter cells IN CYCLIC ORDER (top L->R, right down,
+                # bottom R->L, left up): consecutive entries must be adjacent
+                perim = ([(r0, c) for c in range(c0, c0 + b)]
+                         + [(r, c0 + b - 1) for r in range(r0 + 1, r0 + a)]
+                         + [(r0 + a - 1, c) for c in range(c0 + b - 2, c0 - 1, -1)]
+                         + [(r, c0) for r in range(r0 + a - 2, r0, -1)])
+                if any(p in occupied for p in perim):
+                    continue
+                E = perim[0]  # entry == exit corner
+                # corridor: any valid length 1..max_corridor with right parity
+                cor = None
+                for ncor in rng.sample(range(1, max_corridor + 1), max_corridor):
+                    cor = self._bump_path(rng, frozenset(occupied | (set(perim) - {E})),
+                                          N, E, ncor, max_restarts=6, max_tries=400)
+                    if cor is not None:
+                        break
+                if cor is None:
+                    continue
+                self._carve_path(cor)
+                for u, v in zip(perim, perim[1:] + perim[:1]):
+                    self._open(u, v, self._dir_between(u, v))
+                self.ring_cells = list(perim)
+                self.neck = N
+                self.corridor_cells = cor[1:-1]
+                # rectangle interior becomes part of the ring assembly: it is
+                # reachable only THROUGH the ring, so assembly-external edges
+                # stay exactly one (the neck). Interior cells are connected by
+                # a mini-Prim pass anchored at the assembly.
+                interior = [(r, c) for r in range(r0 + 1, r0 + a - 1)
+                            for c in range(c0 + 1, c0 + b - 1)]
+                self.ring_interior = interior
+                assembly_now = set(self.ring_cells) | set(self.corridor_cells) | {N}
+                for cell in interior:
+                    for d, (dr, dc) in DIRS.items():
+                        v = (cell[0] + dr, cell[1] + dc)
+                        if v in assembly_now:
+                            self._open(cell, v, d)
+                            break
+                    assembly_now.add(cell)
+                occupied.update(cor)
+                occupied.update(perim)
+                occupied.update(interior)
+                break
+            if self.neck is None:
+                raise MazeConstructionError('ring failed')
 
-        # --- detour loops: remove extra walls away from the ring -----------
-        candidates = []
-        for r in range(size):
-            for c in range(size):
-                for d in ('S', 'E'):
-                    dr, dc = DIRS[d]
-                    v = (r + dr, c + dc)
-                    if 0 <= v[0] < size and 0 <= v[1] < size and d in self.walls[(r, c)]:
-                        if (r, c) not in self.ring_cells and v not in self.ring_cells:
-                            candidates.append(((r, c), v, d))
-        rng.shuffle(candidates)
-        for u, v, d in candidates[:detour_openings]:
-            self._open(u, v, d)
+        # 4. spanning fill (randomized Prim): dead-end branches only.
+        # Anchors are backbone + detour cells ONLY — never the ring assembly —
+        # so the ring keeps exactly one external edge (the neck).
+        inmaze = set(occupied)
+        anchors = set(self.backbone) | set(self.detour_cells)
+        if ring:
+            anchors -= set(self.corridor_cells)  # corridor is assembly-adjacent
+            anchors.discard(self.neck)
+        frontier = []
+
+        def add_frontier(cell):
+            for d, (dr, dc) in DIRS.items():
+                v = (cell[0] + dr, cell[1] + dc)
+                if 0 <= v[0] < size and 0 <= v[1] < size and v not in inmaze:
+                    frontier.append((v, cell, d))
+
+        for c in list(anchors):
+            add_frontier(c)
+        while frontier:
+            k = rng.randrange(len(frontier))
+            v, u, d = frontier[k]
+            frontier[k] = frontier[-1]
+            frontier.pop()
+            if v in inmaze:
+                continue
+            self._open(u, v, d)  # d is the direction u -> v (u already in-maze)
+            inmaze.add(v)
+            add_frontier(v)
+        if len(inmaze) != size * size:
+            raise MazeConstructionError('fill incomplete')
+
+    @staticmethod
+    def _dir_between(u, v):
+        dr, dc = v[0] - u[0], v[1] - u[1]
+        for d, (ar, ac) in DIRS.items():
+            if (dr, dc) == (ar, ac):
+                return d
+        raise MazeConstructionError(f'non-adjacent cells {u}->{v}')
+
+    def _carve_path(self, cells):
+        for u, v in zip(cells, cells[1:]):
+            self._open(u, v, self._dir_between(u, v))
 
     def _open(self, u, v, d):
         self.walls[u].discard(d)
         self.walls[v].discard(OPP[d])
 
+    # ------------------------------------------------------------- validate
+    def _validate(self, delta, ring, min_shortest):
+        size = self.size
+        # connectivity + edge count -> cyclomatic number
+        n_edges = sum(len(self.open_dirs(c)) for c in self.walls) // 2
+        cyc = n_edges - size * size + 1
+        want = (1 if delta > 0 else 0) + (1 if ring else 0)
+        assert cyc == want, f'cyclomatic {cyc} != {want}'
+        # full reachability
+        seen = {self.start}
+        q = deque([self.start])
+        while q:
+            u = q.popleft()
+            for d in self.open_dirs(u):
+                v = self.move(u, d)
+                if v not in seen:
+                    seen.add(v)
+                    q.append(v)
+        assert len(seen) == size * size, 'maze not fully connected'
+        # designed shortest == actual BFS shortest
+        sp = self.shortest_path_len()
+        assert sp == len(self.backbone) - 1, f'shortest {sp} != designed {len(self.backbone) - 1}'
+        assert sp >= min_shortest
+        # detour route length == d_ab + delta (with the backbone segment blocked)
+        if delta > 0:
+            A, B = self.detour_endpoints
+            blocked = {frozenset(e) for e in zip(self.backbone, self.backbone[1:])}
+            d = self._bfs_blocked(A, B, blocked)
+            assert d == self._detour_d_ab + delta, f'detour {d} != {self._detour_d_ab}+{delta}'
+        # ring geometry: start/goal outside, exactly one external edge
+        if ring:
+            assert self.start not in self.ring_cells and self.goal not in self.ring_cells
+            assembly = (set(self.ring_cells) | set(self.corridor_cells)
+                        | set(self.ring_interior))
+            ext = sum(1 for c in assembly for d in self.open_dirs(c)
+                      if self.move(c, d) not in assembly)
+            assert ext == 1, f'ring assembly has {ext} external edges, want 1'
+
+    def _bfs_blocked(self, src, dst, blocked):
+        dist = {src: 0}
+        q = deque([src])
+        while q:
+            u = q.popleft()
+            if u == dst:
+                return dist[u]
+            for d in self.open_dirs(u):
+                v = self.move(u, d)
+                if v not in dist and frozenset((u, v)) not in blocked:
+                    dist[v] = dist[u] + 1
+                    q.append(v)
+        return -1
+
+    # ----------------------------------------------------------------- API
     def open_dirs(self, cell):
         return [d for d in 'NSEW' if d not in self.walls[cell]]
 
