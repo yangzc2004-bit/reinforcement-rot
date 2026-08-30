@@ -1,0 +1,36 @@
+# ============================================================================
+# Reinforcement Rot — L3 LLM experiments configuration
+# Copy this file to config.yaml and fill in the three model fields.
+# Everything else has working defaults; tune only when an experiment asks you to.
+# ============================================================================
+
+model:
+  name: "deepseek-chat"                        # any OpenAI-compatible model
+  api_key: "sk-FILL-ME"                        # <- your key
+  base_url: "https://api.deepseek.com/v1"      # <- your endpoint
+  temperature: 0.0
+  max_tokens: 64
+  # For an offline smoke test of the whole pipeline (no API, no cost):
+  #   name: "mock"
+
+maze:
+  size: 9               # grid is size x size cells
+  detour_openings: 4    # extra wall removals creating detour loops
+  ring: true            # guarantee one ring corridor near the start
+  seed: 0
+
+b1:
+  n_mazes: 20           # capability gate: single agent, NO shared memory
+  max_steps: 200
+  breadcrumbs: true     # agent sees its own visited marks (individual memory)
+  # gate: pass when no-memory success rate is in [85%, 90%]
+
+b2:
+  n_mazes: 5            # existence: n_agents sequentially share one memory
+  n_agents: 4
+  n_rounds: 10
+  lams: [1.0, 0.95]     # evaporation off vs on (the intervention contrast)
+  top_k: 5              # retrieval sharpness (LLM analog of beta)
+  write_rule: "success_only"   # none | universal | success_only | efficient_success_only
+  max_steps: 200
+  breadcrumbs: true
