@@ -13,6 +13,11 @@ Geometry control: the two note directions are chosen as the two directions that
 BOTH approach the goal (e.g. goal to the SE -> notes say S and E), so geometry
 is neutral between them and the choice isolates weight-following.
 
+Forced binary choice: OPEN lists exactly the two noted directions, so the
+response space matches the two-alternative softmax being fit. Responses that
+fail to parse or name a closed direction are counted separately as `invalid`
+and excluded from the fit (reported, never silently dropped).
+
 Run:  python -m llm.calib_beta          (from the repo root)
 Uses: llm/config.yaml (model + calib section)
 """
@@ -23,7 +28,7 @@ import re
 from pathlib import Path
 
 from llm.run_b1 import load_config
-from llm.client import from_config
+from llm.client import from_config, CallLimitExceeded
 from llm.manifest import new_manifest, write_manifest
 
 PROBE_SYSTEM = """You are a maze-solving agent. You move one cell per turn on a grid.
@@ -43,16 +48,19 @@ def probe_once(client, rng, r):
     w_low, w_high = 1.0, float(r)
     notes = [(d_low, w_low), (d_high, w_high)]
     rng.shuffle(notes)  # presentation order must not correlate with weight
+    open_dirs = ''.join(sorted([d_low, d_high]))  # forced binary choice
     lines = [f"CELL: {cell[0]},{cell[1]}",
              f"GOAL: {goal[0]},{goal[1]}",
-             "OPEN: NSEW",
+             f"OPEN: {open_dirs}",
              "NOTES from other agents at this cell:"]
     for d, w in notes:
         lines.append(f"- go {d} (weight {w:.2f}, 1 agent(s)): {rng.choice(TEXTS)}")
     lines.append("Your move?")
     resp = client.chat(PROBE_SYSTEM, '\n'.join(lines))
     m = re.search(r'MOVE:\s*([NSEW])', (resp or '').upper())
-    return (m.group(1) == d_high) if m else None
+    if not m or m.group(1) not in (d_low, d_high):
+        return None  # invalid: parse failure or closed direction; not fitted
+    return m.group(1) == d_high
 
 
 def fit_beta(rs, ps):
@@ -76,13 +84,35 @@ def main():
     man = new_manifest('calib_beta', cfg)
     rng = random.Random(cc.get('seed', 0))
 
-    raw = {}
-    for r in ratios:
-        hits = [probe_once(client, rng, r) for _ in range(n_trials)]
-        raw[r] = [h for h in hits if h is not None]
-        print(f"r={r}: P(follow high-weight) = "
-              f"{sum(raw[r])}/{len(raw[r])}", flush=True)
-    rs = [r for r in ratios if raw[r]]
+    raw, invalid = {}, {}
+    interrupted = False
+    try:
+        for r in ratios:
+            hits = []
+            n_inv = 0
+            for _ in range(n_trials):
+                h = probe_once(client, rng, r)
+                if h is None:
+                    n_inv += 1
+                else:
+                    hits.append(h)
+            raw[r], invalid[r] = hits, n_inv
+            print(f"r={r}: P(follow high-weight) = "
+                  f"{sum(hits)}/{len(hits)} (invalid: {n_inv})", flush=True)
+    except CallLimitExceeded as e:
+        interrupted = True
+        print(f"\nCOST FUSE: {e} — fitting on partial data.", flush=True)
+    finally:
+        client.close()
+    rs = [r for r in ratios if raw.get(r)]
+    if not rs:
+        out = Path(__file__).parent / 'calib_beta_results.json'
+        out.write_text(json.dumps(dict(error='no completed ratios',
+                                       interrupted=interrupted), indent=1))
+        man['interrupted'] = interrupted
+        write_manifest(man, out, client=client)
+        print("no completed ratios; partial results + manifest saved")
+        return
     ps = [sum(raw[r]) / len(raw[r]) for r in rs]
     beta = fit_beta(rs, ps)
     boots = []
@@ -101,10 +131,11 @@ def main():
     out = Path(__file__).parent / 'calib_beta_results.json'
     out.write_text(json.dumps(dict(
         ratios=rs, follow_rates=ps, n_trials=n_trials,
+        invalid={str(r): invalid[r] for r in rs},
         beta_eff=beta, ci95=[lo, hi],
         raw={str(r): raw[r] for r in rs}), indent=1))
+    man['interrupted'] = interrupted
     write_manifest(man, out, client=client)
-    client.close()
     print("saved to", out)
 
 
