@@ -134,8 +134,11 @@ class TestTrapConsecutiveRuns(unittest.TestCase):
 
 
 class TestJsonlCorruptTail(unittest.TestCase):
-    def _write(self, path, lines):
-        path.write_text('\n'.join(lines) + '\n')
+    def _write(self, path, lines, final_newline=True):
+        text = '\n'.join(lines)
+        if final_newline:
+            text += '\n'
+        path.write_text(text)
 
     def test_truncated_last_line_is_dropped(self):
         import llm.run_b2 as b2
@@ -143,7 +146,8 @@ class TestJsonlCorruptTail(unittest.TestCase):
                                agent=0, traj={}))
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / 'log.jsonl'
-            self._write(p, [good, '{"maze_seed": 0, "round_re'])
+            self._write(p, [good, '{"maze_seed": 0, "round_re'],
+                        final_newline=False)
             old = b2.EPISODES_LOG
             b2.EPISODES_LOG = p
             try:
@@ -151,6 +155,42 @@ class TestJsonlCorruptTail(unittest.TestCase):
             finally:
                 b2.EPISODES_LOG = old
         self.assertEqual(len(done), 1)  # good line kept, tail dropped
+
+    def test_truncated_tail_is_repaired_before_append(self):
+        import llm.run_b2 as b2
+        good0 = json.dumps(dict(maze_seed=0, round_retention=1.0, round=0,
+                                agent=0, traj={}))
+        good1 = json.dumps(dict(maze_seed=0, round_retention=1.0, round=0,
+                                agent=1, traj={}))
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'log.jsonl'
+            self._write(p, [good0, '{"truncated'], final_newline=False)
+            old = b2.EPISODES_LOG
+            b2.EPISODES_LOG = p
+            try:
+                b2._load_done()
+                with p.open('a', encoding='utf-8') as f:
+                    f.write(good1 + '\n')
+                done = b2._load_done()
+            finally:
+                b2.EPISODES_LOG = old
+        self.assertEqual(len(done), 2)  # new record is readable after repair
+
+    def test_newline_terminated_invalid_tail_is_not_silently_dropped(self):
+        import llm.run_b2 as b2
+        good = json.dumps(dict(maze_seed=0, round_retention=1.0, round=0,
+                               agent=0, traj={}))
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'log.jsonl'
+            self._write(p, [good, '{"broken"'])
+            p.write_text(p.read_text(encoding='utf-8') + '\n', encoding='utf-8')
+            old = b2.EPISODES_LOG
+            b2.EPISODES_LOG = p
+            try:
+                with self.assertRaises(ValueError):
+                    b2._load_done()
+            finally:
+                b2.EPISODES_LOG = old
 
     def test_corrupt_middle_line_raises(self):
         import llm.run_b2 as b2

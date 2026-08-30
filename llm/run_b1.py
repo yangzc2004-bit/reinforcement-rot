@@ -39,8 +39,11 @@ def main():
     mz, b1 = cfg['maze'], cfg['b1']
     client = from_config(cfg)
     man = new_manifest('b1', cfg)
+    out = Path(__file__).parent / 'b1_results.json'
     results = []
     interrupted = False
+    error_message = None
+    fatal_error = None
     try:
         for k in range(b1['n_mazes']):
             seed = mz.get('seed', 0) + k
@@ -56,31 +59,39 @@ def main():
                   f"shortest={traj['shortest']} illegal={traj['illegal']}", flush=True)
     except CallLimitExceeded as e:
         interrupted = True
+        error_message = str(e)
         print(f"\nCOST FUSE: {e} — saving partial results.", flush=True)
+    except Exception as e:
+        interrupted = True
+        fatal_error = e
+        error_message = f'{type(e).__name__}: {e}'
+        print(f"\nRUN ERROR: {error_message} — saving partial results.", flush=True)
     finally:
         client.close()
     if not results:
         print("no completed episodes; nothing to gate on.")
-        man['interrupted'] = interrupted
-        write_manifest(man, None, client=client)
-        return
-    sr = sum(t['success'] for t in results) / len(results)
-    print(f"\nB1 no-memory success rate: {sr:.1%} over {len(results)} mazes"
-          + (" (PARTIAL)" if interrupted else ""))
-    print(f"API calls: {client.n_calls} (attempts: {client.n_attempts}), "
-          f"tokens: {client.n_tokens}")
-    if not interrupted:
-        if 0.85 <= sr <= 0.90:
-            print("GATE PASSED (85-90%): difficulty is calibrated, proceed to B2.")
-        else:
-            print("GATE NOT MET: adjust maze.size / delta / max_steps "
-                  "(or breadcrumbs) and rerun.")
     else:
-        print("GATE SKIPPED: run was interrupted; resume with a higher fuse.")
-    out = Path(__file__).parent / 'b1_results.json'
+        sr = sum(t['success'] for t in results) / len(results)
+        print(f"\nB1 no-memory success rate: {sr:.1%} over {len(results)} mazes"
+              + (" (PARTIAL)" if interrupted else ""))
+        print(f"API calls: {client.n_calls} (attempts: {client.n_attempts}), "
+              f"tokens: {client.n_tokens}")
+        if not interrupted:
+            if 0.85 <= sr <= 0.90:
+                print("GATE PASSED (85-90%): difficulty is calibrated, proceed to B2.")
+            else:
+                print("GATE NOT MET: adjust maze.size / delta / max_steps "
+                      "(or breadcrumbs) and rerun.")
+        else:
+            print("GATE SKIPPED: run was interrupted; rerun with a higher fuse.")
     out.write_text(json.dumps(results, indent=1))
     man['interrupted'] = interrupted
+    man['error'] = error_message
+    man['n_expected'] = b1['n_mazes']
+    man['n_observed'] = len(results)
     write_manifest(man, out, client=client)
+    if fatal_error is not None:
+        raise fatal_error
     print("trajectories saved to", out)
 
 

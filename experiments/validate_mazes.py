@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from llm.maze import Maze
 
 N_SEEDS = 1000
+DELTAS = (2, 4, 6)
 DIRS = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
 OPP = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
 
@@ -125,15 +126,18 @@ def check(maze, delta, ring, min_shortest):
 
 def main():
     fails = []
-    for seed in range(N_SEEDS):
-        try:
-            m = Maze(size=15, delta=4, ring=True, seed=seed)
-            check(m, delta=4, ring=True, min_shortest=30)
-        except Exception as e:
-            fails.append((seed, str(e)[:80]))
-    print(f'{N_SEEDS - len(fails)}/{N_SEEDS} seeds pass all INDEPENDENT invariants')
-    for seed, err in fails[:10]:
-        print(f'  seed {seed}: {err}')
+    total = N_SEEDS * len(DELTAS)
+    for delta in DELTAS:
+        for seed in range(N_SEEDS):
+            try:
+                m = Maze(size=15, delta=delta, ring=True, seed=seed)
+                check(m, delta=delta, ring=True, min_shortest=30)
+            except Exception as e:
+                fails.append((delta, seed, str(e)[:80]))
+    print(f'{total - len(fails)}/{total} delta-seed pairs pass all '
+          'INDEPENDENT invariants')
+    for delta, seed, err in fails[:10]:
+        print(f'  delta={delta} seed={seed}: {err}')
     if fails:
         sys.exit(1)
 

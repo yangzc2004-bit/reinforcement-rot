@@ -28,7 +28,10 @@ python -m llm.run_b2       # existence experiment (resumable; per-episode JSONL)
 
 Dependencies: PyYAML only (optional — config.yaml also accepts JSON).
 Every run writes `<output>.manifest.json` (git SHA, full config, seeds, timing,
-output hash) and supports clean interruption via the `max_calls` cost fuse.
+output hash). B2 omits incomplete conditions from formal results and records
+them in the manifest; a truncated final JSONL line is repaired before resume,
+while mid-file corruption remains fatal. The `max_calls` cost fuse stops
+cleanly after checkpointing.
 
 ## Experiment map
 

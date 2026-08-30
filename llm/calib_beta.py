@@ -84,34 +84,57 @@ def main():
     man = new_manifest('calib_beta', cfg)
     rng = random.Random(cc.get('seed', 0))
 
-    raw, invalid = {}, {}
+    raw, invalid, completed = {}, {}, {}
     interrupted = False
+    error_message = None
+    fatal_error = None
     try:
         for r in ratios:
             hits = []
             n_inv = 0
+            raw[r] = hits
+            invalid[r] = 0
+            completed[r] = 0
             for _ in range(n_trials):
                 h = probe_once(client, rng, r)
+                completed[r] += 1
                 if h is None:
                     n_inv += 1
                 else:
                     hits.append(h)
+                invalid[r] = n_inv
             raw[r], invalid[r] = hits, n_inv
             print(f"r={r}: P(follow high-weight) = "
                   f"{sum(hits)}/{len(hits)} (invalid: {n_inv})", flush=True)
     except CallLimitExceeded as e:
         interrupted = True
+        error_message = str(e)
         print(f"\nCOST FUSE: {e} — fitting on partial data.", flush=True)
+    except Exception as e:
+        interrupted = True
+        fatal_error = e
+        error_message = f'{type(e).__name__}: {e}'
+        print(f"\nRUN ERROR: {error_message} — fitting on partial data.", flush=True)
     finally:
         client.close()
     rs = [r for r in ratios if raw.get(r)]
     if not rs:
         out = Path(__file__).parent / 'calib_beta_results.json'
         out.write_text(json.dumps(dict(error='no completed ratios',
-                                       interrupted=interrupted), indent=1))
+                                       interrupted=interrupted,
+                                       error_message=error_message,
+                                       n_trials_requested=n_trials,
+                                       trials_completed=completed,
+                                       invalid=invalid), indent=1))
         man['interrupted'] = interrupted
+        man['error'] = error_message
+        man['trials_requested'] = n_trials * len(ratios)
+        man['trials_completed'] = sum(completed.values())
+        man['invalid_trials'] = sum(invalid.values())
         write_manifest(man, out, client=client)
         print("no completed ratios; partial results + manifest saved")
+        if fatal_error is not None:
+            raise fatal_error
         return
     ps = [sum(raw[r]) / len(raw[r]) for r in rs]
     beta = fit_beta(rs, ps)
@@ -131,11 +154,21 @@ def main():
     out = Path(__file__).parent / 'calib_beta_results.json'
     out.write_text(json.dumps(dict(
         ratios=rs, follow_rates=ps, n_trials=n_trials,
-        invalid={str(r): invalid[r] for r in rs},
+        n_trials_requested=n_trials,
+        trials_completed={str(r): completed[r] for r in ratios},
+        invalid={str(r): invalid.get(r, 0) for r in ratios},
+        interrupted=interrupted,
+        error_message=error_message,
         beta_eff=beta, ci95=[lo, hi],
         raw={str(r): raw[r] for r in rs}), indent=1))
     man['interrupted'] = interrupted
+    man['error'] = error_message
+    man['trials_requested'] = n_trials * len(ratios)
+    man['trials_completed'] = sum(completed.values())
+    man['invalid_trials'] = sum(invalid.values())
     write_manifest(man, out, client=client)
+    if fatal_error is not None:
+        raise fatal_error
     print("saved to", out)
 
 

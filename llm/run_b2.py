@@ -50,20 +50,26 @@ def _load_done():
     done = {}
     if not EPISODES_LOG.exists():
         return done
-    lines = [ln for ln in EPISODES_LOG.read_text().splitlines() if ln.strip()]
-    for i, line in enumerate(lines):
+    raw_lines = EPISODES_LOG.read_bytes().splitlines(keepends=True)
+    nonempty = [(i, line) for i, line in enumerate(raw_lines) if line.strip()]
+    for pos, (i, raw_line) in enumerate(nonempty):
         try:
-            e = json.loads(line)
-        except json.JSONDecodeError:
-            if i == len(lines) - 1:
+            e = json.loads(raw_line)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            is_last_nonempty = pos == len(nonempty) - 1
+            has_line_terminator = raw_line.endswith((b'\n', b'\r'))
+            if is_last_nonempty and not has_line_terminator:
+                truncate_at = sum(len(line) for line in raw_lines[:i])
+                with EPISODES_LOG.open('r+b') as f:
+                    f.truncate(truncate_at)
                 print(f"WARNING: dropping truncated last line of {EPISODES_LOG} "
-                      f"({len(line)} bytes) — that episode will be re-run",
+                      f"({len(raw_line)} bytes) — that episode will be re-run",
                       flush=True)
                 break
             raise ValueError(
-                f"corrupt JSONL line {i + 1} of {len(lines)} in {EPISODES_LOG}; "
+                f"corrupt JSONL line {i + 1} of {len(raw_lines)} in {EPISODES_LOG}; "
                 f"only a truncated LAST line is recoverable — inspect the file "
-                f"manually before rerunning")
+                f"manually before rerunning") from exc
         done[_episode_key(e)] = e
     return done
 
@@ -82,6 +88,8 @@ def main():
     done = _load_done()
     log = open(EPISODES_LOG, 'a')
     interrupted = False
+    error_message = None
+    fatal_error = None
     try:
         for k, maze in mazes.items():
             seed = mz.get('seed', 0) + k
@@ -116,7 +124,13 @@ def main():
                               flush=True)
     except CallLimitExceeded as e:
         interrupted = True
+        error_message = str(e)
         print(f"\nCOST FUSE: {e} — checkpoint saved, rerun to resume.", flush=True)
+    except Exception as e:
+        interrupted = True
+        fatal_error = e
+        error_message = f'{type(e).__name__}: {e}'
+        print(f"\nRUN ERROR: {error_message} — checkpoint saved.", flush=True)
     finally:
         log.close()
         client.close()
@@ -124,12 +138,27 @@ def main():
     # ---- aggregate per (maze, round_retention) from ALL episodes on disk ----
     episodes = list(_load_done().values())
     results = []
+    partial_conditions = []
+    expected_per_condition = b2['n_rounds'] * n_agents
     for k in mazes:
         seed = mz.get('seed', 0) + k
         for rr in b2['round_retentions']:
             trajs = [e['traj'] for e in episodes
                      if e['maze_seed'] == seed and e['round_retention'] == rr]
             if not trajs:
+                continue
+            observed = len(trajs)
+            if observed != expected_per_condition:
+                partial_conditions.append(dict(
+                    maze=k,
+                    maze_seed=seed,
+                    round_retention=rr,
+                    n_expected=expected_per_condition,
+                    n_observed=observed,
+                ))
+                print(f"maze {k} rr={rr}: incomplete condition "
+                      f"({observed}/{expected_per_condition}), omitted from results",
+                      flush=True)
                 continue
             stats = population_stats(trajs)
             print(f"maze {k} rr={rr}: cycle_rate={stats['cycle_rate']:.2f} "
@@ -140,12 +169,20 @@ def main():
                   flush=True)
             results.append(dict(maze=k, maze_seed=seed, round_retention=rr,
                                 lam_episode=rr ** (1.0 / n_agents),
+                                complete=True,
+                                n_expected=expected_per_condition,
+                                n_observed=observed,
                                 stats=stats, trajs=trajs))
     RESULTS.write_text(json.dumps(results, indent=1))
-    man['interrupted'] = interrupted
+    man['interrupted'] = interrupted or bool(partial_conditions)
+    man['error'] = error_message
+    man['expected_episodes_per_condition'] = expected_per_condition
+    man['partial_conditions'] = partial_conditions
     mpath = write_manifest(man, RESULTS, client=client)
     print(f"\nAPI calls: {client.n_calls}, tokens: {client.n_tokens}")
     print("saved to", RESULTS, "| manifest:", mpath)
+    if fatal_error is not None:
+        raise fatal_error
 
 
 if __name__ == '__main__':
