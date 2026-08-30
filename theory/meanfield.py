@@ -7,15 +7,21 @@ State: s0, s1 (lane scent stocks), sr (ring scent stock), sx (exit-neck scent), 
     dsx  = (escape + F * a_frac) - kappa * sx     (exit neck: escapees + ambient wanderers)
     dnr  = F * p_neck - nr * q_exit / tau_r       (capture vs escape)
 
-kappa = -ln(lambda) / 10  (matches sim: scent *= lambda every 10 ticks)
+UNITS (fixed 2026-08): lambda is the PER-TICK scent retention, identical to the
+sim (bridge_world.py: scent *= lam**10 every 10 ticks, i.e. lam per tick).
+The ODE integrates per tick, so kappa = -ln(lam) per tick. An earlier revision
+used kappa = -ln(lam)/10, which silently made theory evaporation 10x weaker
+than the sim at the same lambda; the qualitative picture below survives the
+correction, but all absolute lifetimes shrink (see __main__ table).
+
 Choice: p_i ∝ (s_i / L_i + eps)^beta * merit_i;  q_exit analogous at ring junction J.
 
-Key findings from this model:
+Key findings from this model (corrected kappa):
 - Deterministic mean-field gives STABILITY (attractor map), not FORMATION (needs fluctuations).
 - Mill = metastable attractor with a critical-mass separatrix: below it, collapse feedback
   (fewer agents -> weaker scent -> faster escape); above, self-sustaining.
-- Mill lifetime tau_mill(lambda, beta): ~100 ticks for beta=1.5 regardless of lambda
-  (mills cannot live); grows with lambda for beta >= 2 and diverges near lambda = 1.
+- Mill lifetime tau_mill(lambda, beta): ~100 ticks or less for beta=1.5 regardless of lambda
+  (mills cannot live); grows with lambda for beta >= 2 and explodes for beta = 2.5.
 - Sim's mill band = formation window: lower edge = mill viability (lifetime > horizon),
   upper edge = race (lane lock-in strangles neck inflow before ring reaches critical mass).
 """
@@ -25,7 +31,7 @@ import numpy as np
 def meanfield_run(lam=0.95, delta=2, N=8, L0=20, R=12, eps=0.5, dep=1.0,
                   w=1.2, beta=2.0, T=30000, a_frac=0.08, init=None):
     """Deterministic mean-field integration (Euler, per-tick). Returns (p1, nr/N)."""
-    kappa = -np.log(lam) / 10.0
+    kappa = -np.log(lam)  # lam = per-tick retention, one ODE step = one tick
     L1 = L0 + 2 * delta
     tau0, tau1, tau_r = 2 * L0, 2 * L1, float(R)
     st = dict(s0=eps * 0.1, s1=eps * 0.1, sr=eps * 0.1, sx=eps * 0.1, nr=0.0)
@@ -54,7 +60,7 @@ def meanfield_run(lam=0.95, delta=2, N=8, L0=20, R=12, eps=0.5, dep=1.0,
 
 def mill_lifetime(lam, beta=2.0, delta=2, N=8, nr0=4.0, sr0=30.0, T_max=200000):
     """Lifetime of a formed mill: ticks until ring population drops below 0.5."""
-    kappa = -np.log(lam) / 10.0
+    kappa = -np.log(lam)  # lam = per-tick retention (matches sim semantics)
     L0, R, eps, dep, w = 20, 12, 0.5, 1.0, 1.2
     L1 = L0 + 2 * delta
     tau0, tau1, tau_r = 2 * L0, 2 * L1, float(R)
