@@ -20,6 +20,7 @@ except ImportError:  # tiny fallback: accept JSON in config.yaml
 from llm.maze import Maze
 from llm.client import from_config
 from llm.agents import SolverAgent
+from llm.manifest import new_manifest, write_manifest
 
 
 def load_config():
@@ -37,14 +38,17 @@ def main():
     cfg = load_config()
     mz, b1 = cfg['maze'], cfg['b1']
     client = from_config(cfg)
+    man = new_manifest('b1', cfg)
     results = []
     for k in range(b1['n_mazes']):
-        maze = Maze(size=mz['size'], detour_openings=mz['detour_openings'],
-                    ring=mz.get('ring', True), seed=mz.get('seed', 0) + k)
+        seed = mz.get('seed', 0) + k
+        maze = Maze(size=mz['size'], delta=mz.get('delta', 4),
+                    ring=mz.get('ring', True), seed=seed,
+                    min_shortest=mz.get('min_shortest', 30))
         agent = SolverAgent(client, maze, memory=None,
                             breadcrumbs=b1.get('breadcrumbs', True),
                             write_rule='none', agent_id=0)
-        traj = agent.run(max_steps=b1['max_steps'])
+        traj = agent.run(max_steps=b1['max_steps'], maze_seed=seed)
         results.append(traj)
         print(f"maze {k}: success={traj['success']} steps={traj['steps']} "
               f"shortest={traj['shortest']} illegal={traj['illegal']}", flush=True)
@@ -54,10 +58,12 @@ def main():
     if 0.85 <= sr <= 0.90:
         print("GATE PASSED (85-90%): difficulty is calibrated, proceed to B2.")
     else:
-        print("GATE NOT MET: adjust maze.size / detour_openings / max_steps "
+        print("GATE NOT MET: adjust maze.size / delta / max_steps "
               "(or breadcrumbs) and rerun.")
     out = Path(__file__).parent / 'b1_results.json'
     out.write_text(json.dumps(results, indent=1))
+    write_manifest(man, out, client=client)
+    client.close()
     print("trajectories saved to", out)
 
 
