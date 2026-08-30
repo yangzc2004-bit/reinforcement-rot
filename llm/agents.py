@@ -3,8 +3,13 @@ writing the shared memory.
 
 Prompt contract (kept minimal so results are comparable across models):
   system: role + rules + the single-letter MOVE: X output format
-  user  : current cell, open directions, own visited marks (if breadcrumbs),
-          top-k shared-memory entries at this cell (if memory enabled)
+  user  : current cell, GOAL coordinates, open directions, own visited marks
+          (if breadcrumbs), top-k shared-memory entries at this cell
+          (if memory enabled)
+
+GOAL coordinates are given (the L3 analog of L2's outbound merit bias): without
+them there is no history-vs-geometry tension and B1 measures exploration luck,
+not capability. The full map is NEVER provided.
 
 Write rules (B5 ablation axis — {mechanical vs authored} x {success-gated vs all}):
   none                   : never write (pure individual run)
@@ -32,8 +37,9 @@ AUTHOR_SYSTEM = """You just walked a maze from the start to the goal (or died tr
 You are now writing notes into a SHARED memory that later agents will read at
 the exact cell they apply to. Write short, concrete, honest advice: which way
 to go at a junction, which branch loops back or dead-ends. You may be wrong;
-later agents will judge. Do not mention coordinates of the goal (you never saw
-a map). Reply with one note per line, EXACTLY in this format:
+later agents will judge. You know the goal's coordinates but never saw a map;
+do not invent distances or claim knowledge of cells you did not visit. Reply
+with one note per line, EXACTLY in this format:
 NOTE: r,c | D | your advice
 where (r,c) is a junction listed below and D is one of its open directions.
 Write at most {max_notes} notes. If nothing is worth saying, reply: NONE"""
@@ -68,7 +74,12 @@ class SolverAgent:
         self.n_notes_dropped = 0
 
     def _prompt(self, cell, visited):
+        # GOAL is given as coordinates: the L3 analog of L2's outbound merit
+        # bias toward the food source. Without it the history-vs-geometry
+        # tension collapses (no geometry leg), and B1 measures exploration
+        # luck instead of capability. Full map is NEVER provided.
         lines = [f"CELL: {cell[0]},{cell[1]}",
+                 f"GOAL: {self.maze.goal[0]},{self.maze.goal[1]}",
                  f"OPEN: {''.join(self.maze.open_dirs(cell))}"]
         if self.breadcrumbs and visited:
             lines.append("VISITED: " + ' '.join(f"{r},{c}" for r, c in sorted(visited)))
@@ -77,7 +88,8 @@ class SolverAgent:
             if hits:
                 lines.append("NOTES from other agents at this cell:")
                 for h in hits:
-                    lines.append(f"- go {h['direction']} (weight {h['weight']:.2f}): {h['text']}")
+                    lines.append(f"- go {h['direction']} (weight {h['weight']:.2f}, "
+                                 f"{h['n_writers']} agent(s)): {h['text']}")
         lines.append("Your move?")
         return '\n'.join(lines)
 
@@ -113,8 +125,10 @@ class SolverAgent:
             else:
                 self.n_notes_dropped += 1
 
-    def run(self, max_steps=200, round_id=0):
-        """One episode. Returns a trajectory dict."""
+    def run(self, max_steps=200, round_id=0, maze_seed=None):
+        """One episode. Returns a trajectory dict (maze_seed is recorded so that
+        metrics can group loops by maze — identical coordinates in different
+        mazes are NOT the same loop)."""
         cell = self.maze.start
         path = [cell]
         visited = {cell}
@@ -154,7 +168,8 @@ class SolverAgent:
                                 self.memory.reinforce(c, d, "on a successful route",
                                                       self.id, round_id)
                                 break
-        return dict(agent=self.id, round=round_id, path=path, steps=steps,
+        return dict(agent=self.id, round=round_id, maze_seed=maze_seed,
+                    path=path, steps=steps,
                     success=success, illegal=illegal, shortest=shortest,
                     notes_written=self.n_notes_written,
                     notes_dropped=self.n_notes_dropped)
