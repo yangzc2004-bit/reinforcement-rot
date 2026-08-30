@@ -110,12 +110,84 @@ class TestMemory(unittest.TestCase):
         self.assertEqual(m2.entries, m.entries)
 
 
+class TestTrapConsecutiveRuns(unittest.TestCase):
+    """A trap is a CONSECUTIVE repeat of one canonical loop, not a total count:
+    interleaved A,B,A is exploration; A,A is a mill."""
+
+    def test_interleaved_loops_are_not_a_trap(self):
+        loop2 = [(5, 5), (5, 6), (6, 6), (6, 5), (5, 5)]
+        p = PLAIN + LOOP + [(2, 2), (4, 5)] + loop2 + [(5, 5), (2, 2)] + LOOP + OUT
+        e = episode_stats(traj(0, 0, p))
+        self.assertFalse(e['trapped'])
+        self.assertIsNone(e['escape_time'])
+
+    def test_consecutive_repeat_is_a_trap(self):
+        e = episode_stats(traj(0, 0, PLAIN + LOOP + LOOP + OUT))
+        self.assertTrue(e['trapped'])
+        self.assertTrue(e['escaped'])
+        self.assertIsNotNone(e['escape_time'])
+
+    def test_consecutive_repeat_to_death(self):
+        e = episode_stats(traj(0, 0, PLAIN + LOOP + LOOP))
+        self.assertTrue(e['trapped'])
+        self.assertFalse(e['escaped'])
+
+
+class TestJsonlCorruptTail(unittest.TestCase):
+    def _write(self, path, lines):
+        path.write_text('\n'.join(lines) + '\n')
+
+    def test_truncated_last_line_is_dropped(self):
+        import llm.run_b2 as b2
+        good = json.dumps(dict(maze_seed=0, round_retention=1.0, round=0,
+                               agent=0, traj={}))
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'log.jsonl'
+            self._write(p, [good, '{"maze_seed": 0, "round_re'])
+            old = b2.EPISODES_LOG
+            b2.EPISODES_LOG = p
+            try:
+                done = b2._load_done()
+            finally:
+                b2.EPISODES_LOG = old
+        self.assertEqual(len(done), 1)  # good line kept, tail dropped
+
+    def test_corrupt_middle_line_raises(self):
+        import llm.run_b2 as b2
+        good = json.dumps(dict(maze_seed=0, round_retention=1.0, round=0,
+                               agent=0, traj={}))
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'log.jsonl'
+            self._write(p, [good, '{"broken"', good])
+            old = b2.EPISODES_LOG
+            b2.EPISODES_LOG = p
+            try:
+                with self.assertRaises(ValueError):
+                    b2._load_done()
+            finally:
+                b2.EPISODES_LOG = old
+
+
 class TestClientFuse(unittest.TestCase):
     def test_max_calls_fuse(self):
         c = ChatClient(model='x', api_key='x', base_url='http://localhost:0',
                        max_calls=0)
         with self.assertRaises(CallLimitExceeded):
             c.chat('s', 'u')
+
+    def test_fuse_counts_attempts_not_successes(self):
+        # retries (failed attempts) burn the budget too — they cost money
+        from unittest import mock
+        c = ChatClient(model='x', api_key='x', base_url='http://localhost:0',
+                       max_calls=3)
+        self.assertEqual(c.n_attempts, 0)
+        self.assertEqual(c.n_calls, 0)
+        with mock.patch('time.sleep'):  # skip real backoff waits
+            with self.assertRaises(CallLimitExceeded):
+                c.chat('s', 'u')  # all attempts fail (nothing on port 0)
+        self.assertEqual(c.n_attempts, 3)   # fuse tripped at attempt #3
+        self.assertEqual(c.n_calls, 0)      # no successes
+        self.assertLessEqual(c.n_attempts, c.max_calls)
 
 
 class TestMockEndToEnd(unittest.TestCase):
