@@ -17,6 +17,7 @@ DATA = HERE / "data"
 TARGETS = {
     "l2_phase_results.csv.gz.b64": "l2_phase_results.csv",
     "l2_verify_results.csv.gz.b64": "l2_verify_results.csv",
+    "l2_nsweep_results.csv.gz.b64": "l2_nsweep_results.csv",
 }
 
 for stem, out_name in TARGETS.items():
