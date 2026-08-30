@@ -18,6 +18,9 @@ produces:
 - `l2_verify_results.csv` — 1800 runs, robustness verification
   (32 seeds, T=8000, parameter perturbations; columns: task, lam,
   delta, seed, params, sh0, sh1, milling, category)
+- `l2_nsweep_results.csv` — 168 runs, T3 population sweep at delta=2,
+  N in {2, 4} x 7 lambdas x 12 seeds (same columns as phase scan;
+  compare with the N=8 column of the phase scan)
 
 `category` is one of `mill` / `optimal` / `detour` / `mixed`.
 
