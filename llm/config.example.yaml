@@ -31,6 +31,12 @@ b2:
   n_rounds: 10
   lams: [1.0, 0.95]     # evaporation off vs on (the intervention contrast)
   top_k: 5              # retrieval sharpness (LLM analog of beta)
-  write_rule: "success_only"   # none | universal | success_only | efficient_success_only
   max_steps: 200
   breadcrumbs: true
+  # Write rule (B5 ablation axis — {mechanical vs authored} x {success vs all}):
+  #   none                   no writes (individual runs)
+  #   success_only           mechanical path distill, success-gated
+  #   efficient_success_only mechanical, only <= 1.25x shortest paths
+  #   agent_authored         agent writes natural-language notes, success-gated
+  #   universal              agent authors notes for every junction, win or lose
+  write_rule: "agent_authored"

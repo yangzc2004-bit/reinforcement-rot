@@ -19,6 +19,20 @@ python -m llm.run_b2     # existence experiment (shared memory, lam contrast)
 
 No dependencies beyond PyYAML (optional: config.yaml also accepts JSON).
 
+## Write rules (B5 ablation axis)
+
+| rule | who writes | when |
+|------|-----------|------|
+| `none` | — | never |
+| `success_only` | mechanical path distill | only on success |
+| `efficient_success_only` | mechanical | only if steps <= 1.25x shortest |
+| `agent_authored` | the agent itself, in natural language | only on success |
+| `universal` | the agent itself, incl. dead-end warnings | every episode |
+
+Authored notes are validated (cell on path, direction open) before entering
+memory; authored advice is what later agents literally read in their prompts —
+the "detour experience gets amplified" claim is then directly observable.
+
 ## Experiment map
 
 | ID | Question | Script | Status |
@@ -27,7 +41,7 @@ No dependencies beyond PyYAML (optional: config.yaml also accepts JSON).
 | B2 | Does a shared loop emerge with memory + no evaporation? | `run_b2.py` | runnable |
 | B3 | Perturbation injection dose-response (the heart) | planned | — |
 | B4 | Evaporation dose-response λ ∈ {1, .99, .97, .95, .9} | `run_b2.py` (`b2.lams`) | runnable |
-| B5 | Write-rule ablation (universal / success-only / efficient-success-only) | `run_b2.py` (`b2.write_rule`) | runnable |
+| B5 | Write-rule ablation (see table above) | `run_b2.py` (`b2.write_rule`) | runnable |
 | B6 | N ∈ {1,2,4,8} | `run_b2.py` (`b2.n_agents`) | runnable |
 | B7 | Persistence over T=20 rounds | `run_b2.py` (`b2.n_rounds`) | runnable |
 

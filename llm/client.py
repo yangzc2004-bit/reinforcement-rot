@@ -20,7 +20,7 @@ class ChatClient:
         self.n_calls = 0
         self.n_tokens = 0
 
-    def chat(self, system, user):
+    def chat(self, system, user, max_tokens=None):
         body = json.dumps({
             "model": self.model,
             "messages": [
@@ -28,7 +28,7 @@ class ChatClient:
                 {"role": "user", "content": user},
             ],
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens or self.max_tokens,
         }).encode()
         req = urllib.request.Request(
             self.base_url + "/chat/completions",
@@ -54,8 +54,16 @@ class MockClient:
         self.n_calls = 0
         self.n_tokens = 0
 
-    def chat(self, system, user):
+    def chat(self, system, user, max_tokens=None):
         self.n_calls += 1
+        if system.startswith('You just walked'):
+            # authoring call: echo one valid note from the first junction listed
+            for line in user.splitlines():
+                if line.startswith('JCT '):
+                    cell = line.split()[1]
+                    d = line.split('OPEN=', 1)[1][:1]
+                    return f"NOTE: {cell} | {d} | mock note"
+            return "NONE"
         legal = 'NSEW'
         for line in user.splitlines():
             if line.startswith('OPEN:'):
