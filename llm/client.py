@@ -8,8 +8,9 @@ Reliability features (paid-run armor):
   - exponential backoff with jitter on HTTP 429 / 5xx and network timeouts
     (client and 4xx-other-than-429 errors are raised immediately: they are
     config bugs, not transient failures);
-  - max_calls cost fuse: raises CallLimitExceeded so the run stops cleanly,
-    letting the runner checkpoint everything completed so far;
+  - max_calls cost fuse: counts REQUEST ATTEMPTS (retries included — that is
+    what costs money / rate-limit), raises CallLimitExceeded so the run stops
+    cleanly, letting the runner checkpoint everything completed so far;
   - optional per-call JSONL log (timestamp, latency, tokens, status) for cost
     accounting and post-mortems.
 """
@@ -38,7 +39,8 @@ class ChatClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.max_calls = max_calls
-        self.n_calls = 0
+        self.n_attempts = 0   # every request attempt (retries included)
+        self.n_calls = 0      # successful completions only
         self.n_tokens = 0
         self.n_errors = 0
         self._log = open(log_path, 'a') if log_path else None
@@ -54,9 +56,6 @@ class ChatClient:
             self._log.flush()
 
     def chat(self, system, user, max_tokens=None):
-        if self.max_calls is not None and self.n_calls >= self.max_calls:
-            raise CallLimitExceeded(
-                f'max_calls fuse tripped at {self.max_calls} calls')
         body = json.dumps({
             "model": self.model,
             "messages": [
@@ -69,6 +68,10 @@ class ChatClient:
         t0 = time.time()
         last_err = None
         for attempt in range(self.max_retries + 1):
+            if self.max_calls is not None and self.n_attempts >= self.max_calls:
+                raise CallLimitExceeded(
+                    f'max_calls fuse tripped at {self.max_calls} request attempts')
+            self.n_attempts += 1
             try:
                 req = urllib.request.Request(
                     self.base_url + "/chat/completions",
@@ -115,6 +118,7 @@ class MockClient:
     def __init__(self, seed=0):
         self.rng = random.Random(seed)
         self.n_calls = 0
+        self.n_attempts = 0
         self.n_tokens = 0
         self.n_errors = 0
         self.max_calls = None
@@ -124,6 +128,7 @@ class MockClient:
 
     def chat(self, system, user, max_tokens=None):
         self.n_calls += 1
+        self.n_attempts += 1  # mock never retries: attempts == calls
         if system.startswith('You just walked'):
             # authoring call: echo one valid note from the first junction listed
             for line in user.splitlines():
