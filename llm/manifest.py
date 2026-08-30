@@ -51,6 +51,7 @@ def new_manifest(experiment, config):
         'runtime_s': None,
         'output_sha256': None,
         'api_calls': None,
+        'api_attempts': None,
         'api_tokens': None,
         'api_errors': None,
         'interrupted': False,
@@ -64,6 +65,7 @@ def write_manifest(m, out_path, client=None):
     m['runtime_s'] = round(time.time() - m.pop('_t0'), 2)
     if client is not None:
         m['api_calls'] = getattr(client, 'n_calls', None)
+        m['api_attempts'] = getattr(client, 'n_attempts', None)
         m['api_tokens'] = getattr(client, 'n_tokens', None)
         m['api_errors'] = getattr(client, 'n_errors', None)
     out_path = Path(out_path) if out_path else None
