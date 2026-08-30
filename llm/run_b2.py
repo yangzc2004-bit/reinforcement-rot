@@ -40,12 +40,31 @@ def _episode_key(e):
 
 
 def _load_done():
+    """Parse the JSONL episode log, tolerating ONE corrupt TAIL line.
+
+    The log is append-only with flush after every record, so the only realistic
+    corruption is a truncated last line from a crash/kill mid-write. Anything
+    else (a corrupt line in the MIDDLE) means the file was damaged by something
+    we don't understand — refuse to continue rather than silently drop data.
+    """
     done = {}
-    if EPISODES_LOG.exists():
-        for line in EPISODES_LOG.read_text().splitlines():
-            if line.strip():
-                e = json.loads(line)
-                done[_episode_key(e)] = e
+    if not EPISODES_LOG.exists():
+        return done
+    lines = [ln for ln in EPISODES_LOG.read_text().splitlines() if ln.strip()]
+    for i, line in enumerate(lines):
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            if i == len(lines) - 1:
+                print(f"WARNING: dropping truncated last line of {EPISODES_LOG} "
+                      f"({len(line)} bytes) — that episode will be re-run",
+                      flush=True)
+                break
+            raise ValueError(
+                f"corrupt JSONL line {i + 1} of {len(lines)} in {EPISODES_LOG}; "
+                f"only a truncated LAST line is recoverable — inspect the file "
+                f"manually before rerunning")
+        done[_episode_key(e)] = e
     return done
 
 
