@@ -86,7 +86,7 @@ class Maze:
         if target_len < md or (target_len - md) % 2 != 0:
             return None
         for _ in range(max_restarts):
-            path = self._bfs_path(src, dst, blocked)
+            path = self._bfs_path(src, dst, blocked, rng=rng)
             if path is None:
                 return None
             if (target_len - (len(path) - 1)) % 2 != 0:
@@ -116,7 +116,7 @@ class Maze:
         return (0 <= r < self.size and 0 <= c < self.size
                 and cell not in blocked and cell not in cells)
 
-    def _bfs_path(self, src, dst, blocked):
+    def _bfs_path(self, src, dst, blocked, rng=None):
         dist = {src: 0}
         prev = {}
         q = deque([src])
@@ -127,7 +127,10 @@ class Maze:
                 while path[-1] != src:
                     path.append(prev[path[-1]])
                 return path[::-1]
-            for d, (dr, dc) in DIRS.items():
+            directions = list(DIRS.items())
+            if rng is not None:
+                rng.shuffle(directions)
+            for d, (dr, dc) in directions:
                 v = (u[0] + dr, u[1] + dc)
                 if (0 <= v[0] < self.size and 0 <= v[1] < self.size
                         and v not in dist and (v not in blocked or v == dst)):

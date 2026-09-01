@@ -415,18 +415,25 @@ class TestNavigationLedger(unittest.TestCase):
         maze = Maze(size=15, delta=4, ring=True, seed=0)
         agent = SolverAgent(MockClient(seed=0), maze, memory=None,
                             navigation_ledger=True)
-        cell = (1, 0)
+        parent, cell, child = maze.backbone[:3]
+        backtrack = maze._dir_between(cell, parent)
+        forward = maze._dir_between(cell, child)
         prompt = agent._prompt(
             cell,
-            visited={(0, 0), cell},
-            attempted={((1, 0), 'N')},
-            parents={cell: (0, 0)},
-            path=[(0, 0), cell],
+            visited={parent, cell},
+            attempted={(cell, backtrack)},
+            parents={cell: parent},
+            path=[parent, cell],
         )
-        self.assertIn('TRIED_OPEN: N', prompt)
-        self.assertIn('UNTRIED_OPEN: E', prompt)
-        self.assertIn('BACKTRACK: N', prompt)
-        self.assertIn('RECENT_PATH: 0,0 -> 1,0', prompt)
+        self.assertIn(f'TRIED_OPEN: {backtrack}', prompt)
+        untried = next(line for line in prompt.splitlines()
+                       if line.startswith('UNTRIED_OPEN:'))
+        self.assertIn(forward, untried)
+        self.assertIn(f'BACKTRACK: {backtrack}', prompt)
+        self.assertIn(
+            f'RECENT_PATH: {parent[0]},{parent[1]} -> {cell[0]},{cell[1]}',
+            prompt,
+        )
         self.assertIn('NAV_RULE:', prompt)
 
     def test_visit_only_prompt_omits_navigation_ledger(self):
