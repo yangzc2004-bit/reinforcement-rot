@@ -22,9 +22,10 @@ Construction (exactly two cycles — cyclomatic number 2):
      cell is NEVER part of the ring assembly.
   4. FILL: each remaining free-space component is attached to the controlled
      graph by EXACTLY ONE root edge, then spanned internally by randomized
-     Prim. The root prefers a step away from the goal. This keeps filler cells
-     reachable without creating many irrelevant, geometry-attractive exits
-     from the backbone.
+     Prim. By default roots prefer a step away from the goal. The explicit
+     `deceptive_fill_roots` calibration parameter can instead place a fixed
+     number of roots toward the goal. This keeps filler difficulty controlled
+     rather than seed-dependent.
 
 Structural invariants (asserted at construction; experiments/validate_mazes.py
 re-checks them over 1000 seeds):
@@ -49,10 +50,12 @@ class MazeConstructionError(RuntimeError):
 class Maze:
     def __init__(self, size=15, delta=4, ring=True, seed=0, min_shortest=30,
                  max_backbone=60, neck_min_dist=6, max_corridor=4,
-                 max_attempts=300):
+                 deceptive_fill_roots=0, max_attempts=300):
         if delta % 2 != 0:
             raise ValueError('delta must be EVEN: on a bipartite grid two routes '
                              'between the same endpoints differ by an even number')
+        if deceptive_fill_roots not in (0, 1):
+            raise ValueError('deceptive_fill_roots currently supports only 0 or 1')
         self.size = size
         self.delta = delta
         self.start = (0, 0)
@@ -61,8 +64,8 @@ class Maze:
         for _ in range(max_attempts):
             try:
                 self._build(rng, delta, ring, min_shortest, max_backbone,
-                            neck_min_dist, max_corridor)
-                self._validate(delta, ring, min_shortest)
+                            neck_min_dist, max_corridor, deceptive_fill_roots)
+                self._validate(delta, ring, min_shortest, deceptive_fill_roots)
                 return
             except MazeConstructionError:
                 continue
@@ -130,7 +133,7 @@ class Maze:
 
     # ------------------------------------------------------------------ build
     def _build(self, rng, delta, ring, min_shortest, max_backbone,
-               neck_min_dist, max_corridor):
+               neck_min_dist, max_corridor, deceptive_fill_roots):
         size = self.size
         self.walls = {(r, c): set(DIRS) for r in range(size) for c in range(size)}
 
@@ -263,6 +266,7 @@ class Maze:
 
         self.fill_components = [sorted(comp) for comp in components]
         self.fill_roots = []
+        specs = []
         for comp in components:
             options = []
             for v in sorted(comp):
@@ -282,13 +286,35 @@ class Maze:
                     options.append((score, u, v, d, goal_delta))
             if not options:
                 raise MazeConstructionError('fill component has no controlled anchor')
-            best = max(score for score, *_ in options)
-            choices = [o for o in options if o[0] == best]
+            specs.append((comp, options))
+
+        eligible = [
+            i for i, (_, options) in enumerate(specs)
+            if any(goal_delta < 0 and anchor in backbone_cells
+                   for _, anchor, _, _, goal_delta in options)
+        ]
+        if len(eligible) < deceptive_fill_roots:
+            raise MazeConstructionError('not enough toward-goal fill roots')
+        deceptive_components = set(
+            rng.sample(eligible, deceptive_fill_roots))
+
+        for i, (comp, options) in enumerate(specs):
+            deceptive = i in deceptive_components
+            if deceptive:
+                candidates = [
+                    o for o in options
+                    if o[4] < 0 and o[1] in backbone_cells
+                ]
+                target_delta = min(o[4] for o in candidates)
+                choices = [o for o in candidates if o[4] == target_delta]
+            else:
+                best = max(score for score, *_ in options)
+                choices = [o for o in options if o[0] == best]
             _, anchor, root, d, goal_delta = rng.choice(choices)
             self._open(anchor, root, d)
             self.fill_roots.append(dict(anchor=anchor, root=root,
                                         goal_delta=goal_delta,
-                                        size=len(comp)))
+                                        deceptive=deceptive, size=len(comp)))
 
             grown = {root}
             frontier = []
@@ -330,7 +356,7 @@ class Maze:
         self.walls[v].discard(OPP[d])
 
     # ------------------------------------------------------------- validate
-    def _validate(self, delta, ring, min_shortest):
+    def _validate(self, delta, ring, min_shortest, deceptive_fill_roots):
         size = self.size
         # connectivity + edge count -> cyclomatic number
         n_edges = sum(len(self.open_dirs(c)) for c in self.walls) // 2
@@ -366,6 +392,7 @@ class Maze:
             ext = sum(1 for c in assembly for d in self.open_dirs(c)
                       if self.move(c, d) not in assembly)
             assert ext == 1, f'ring assembly has {ext} external edges, want 1'
+        assert sum(root['deceptive'] for root in self.fill_roots) == deceptive_fill_roots
 
     def _bfs_blocked(self, src, dst, blocked):
         dist = {src: 0}

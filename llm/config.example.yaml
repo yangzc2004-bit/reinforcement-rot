@@ -29,6 +29,7 @@ maze:
   max_backbone: 60      # upper bound on the designed shortest path
   neck_min_dist: 6      # minimum backbone distance before the dangling ring
   max_corridor: 4       # maximum neck-to-ring corridor length
+  deceptive_fill_roots: 0  # B1 calibration: fixed toward-goal filler entrances
   seed: 0
 
 b1:

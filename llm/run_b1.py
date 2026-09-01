@@ -46,6 +46,8 @@ def main():
     n_mazes = int(os.environ.get('B1_N_MAZES', b1['n_mazes']))
     max_steps = int(os.environ.get('B1_MAX_STEPS', b1['max_steps']))
     seed_start = int(os.environ.get('B1_SEED_START', mz.get('seed', 0)))
+    deceptive_fill_roots = int(os.environ.get(
+        'B1_DECEPTIVE_FILL_ROOTS', mz.get('deceptive_fill_roots', 0)))
     navigation_guard = os.environ.get(
         'B1_NAVIGATION_GUARD',
         str(b1.get('navigation_guard', False)),
@@ -63,6 +65,7 @@ def main():
     manifest_cfg['b1']['navigation_guard'] = navigation_guard
     manifest_cfg['b1']['stagnation_repeats'] = stagnation_repeats
     manifest_cfg['b1']['seed_start'] = seed_start
+    manifest_cfg['maze']['deceptive_fill_roots'] = deceptive_fill_roots
     man = new_manifest('b1', manifest_cfg)
     out = Path(os.environ.get(
         'LLM_B1_OUTPUT', Path(__file__).parent / 'b1_results.json'))
@@ -92,7 +95,8 @@ def main():
                         min_shortest=mz.get('min_shortest', 30),
                         max_backbone=mz.get('max_backbone', 60),
                         neck_min_dist=mz.get('neck_min_dist', 6),
-                        max_corridor=mz.get('max_corridor', 4))
+                        max_corridor=mz.get('max_corridor', 4),
+                        deceptive_fill_roots=deceptive_fill_roots)
             agent = SolverAgent(client, maze, memory=None,
                                 breadcrumbs=b1.get('breadcrumbs', True),
                                 write_rule='none', agent_id=0,

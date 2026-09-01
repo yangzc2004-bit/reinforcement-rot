@@ -61,6 +61,14 @@ class TestMaze(unittest.TestCase):
             self.assertEqual(frozenset(external_edges[0]),
                              frozenset((root['root'], root['anchor'])))
 
+    def test_one_deceptive_fill_root_is_exact_and_toward_goal(self):
+        m = Maze(size=10, delta=2, ring=True, seed=7,
+                 min_shortest=18, max_backbone=18, neck_min_dist=5,
+                 deceptive_fill_roots=1)
+        deceptive = [root for root in m.fill_roots if root['deceptive']]
+        self.assertEqual(len(deceptive), 1)
+        self.assertLess(deceptive[0]['goal_delta'], 0)
+
 
 class TestMillRate(unittest.TestCase):
     def test_same_agent_two_rounds_is_not_a_mill(self):

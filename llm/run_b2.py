@@ -103,7 +103,8 @@ def main():
                      min_shortest=mz.get('min_shortest', 30),
                      max_backbone=mz.get('max_backbone', 60),
                      neck_min_dist=mz.get('neck_min_dist', 6),
-                     max_corridor=mz.get('max_corridor', 4))
+                     max_corridor=mz.get('max_corridor', 4),
+                     deceptive_fill_roots=mz.get('deceptive_fill_roots', 0))
              for k in range(b2['n_mazes'])}
 
     done = _load_done()
