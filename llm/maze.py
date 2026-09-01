@@ -147,8 +147,19 @@ class Maze:
         if delta > 0:
             n = len(bb)
             for _ in range(80):
-                i = rng.randrange(2, n - 12)
-                j = rng.randrange(i + 8, min(n - 2, i + 26))
+                if n >= 15:
+                    i = rng.randrange(2, n - 12)
+                    j = rng.randrange(i + 8, min(n - 2, i + 26))
+                else:
+                    # Small calibration mazes have shorter backbones. Keep
+                    # one-cell endpoint margins and a meaningful A-B segment
+                    # instead of assuming the 15x15 experiment geometry.
+                    min_span = 3
+                    i_hi = n - min_span - 2
+                    if i_hi < 1:
+                        raise MazeConstructionError('backbone too short for detour')
+                    i = rng.randint(1, i_hi)
+                    j = rng.randint(i + min_span, n - 2)
                 A, B = bb[i], bb[j]
                 det = self._bump_path(rng, frozenset(occupied - {A, B}),
                                       A, B, (j - i) + delta)

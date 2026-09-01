@@ -10,8 +10,10 @@ model:
   base_url: "https://api.deepseek.com/v1"      # <- your endpoint
   temperature: 0.0
   max_tokens: 64
+  thinking: false                               # DeepSeek V4: disable reasoning
   timeout: 120            # per-request timeout (s); 429/5xx/timeout retried
   max_retries: 5          # exponential backoff with jitter
+  request_interval: 0.0   # minimum seconds between request starts (rate limit)
   max_calls: null         # COST FUSE: stop the run cleanly after N API calls
   log_path: null          # optional per-call JSONL log (tokens, latency, errors)
   # For an offline smoke test of the whole pipeline (no API, no cost):
@@ -24,18 +26,24 @@ maze:
                         # the same endpoints always differ by an even number.
   ring: true            # dangling single-neck ring (entrance == exit == neck)
   min_shortest: 30      # designed shortest path S->G (BFS-verified)
+  max_backbone: 60      # upper bound on the designed shortest path
+  neck_min_dist: 6      # minimum backbone distance before the dangling ring
+  max_corridor: 4       # maximum neck-to-ring corridor length
   seed: 0
 
 b1:
   n_mazes: 20           # capability gate: single agent, NO shared memory
   max_steps: 300
   breadcrumbs: true     # agent sees its own visited marks (individual memory)
-  # gate: pass when no-memory success rate is in [85%, 90%]
+  navigation_ledger: false
+  navigation_guard: false
+  # target band: no-memory success rate in [80%, 90%]
 
 b2:
   n_mazes: 5            # existence: n_agents sequentially share one memory
   n_agents: 4
   n_rounds: 10
+  include_no_memory_control: true  # same-maze paired baseline
   # evaporation is PER-EPISODE; specify the interpretable per-ROUND retention:
   #   lam_episode = round_retention ** (1 / n_agents)
   # e.g. n_agents=4: round_retention 0.85 -> lam_episode ~ 0.960
@@ -45,6 +53,8 @@ b2:
   write_rule: "success_only"   # none | universal | success_only | efficient_success_only | agent_authored
   max_steps: 300
   breadcrumbs: true
+  navigation_ledger: false
+  navigation_guard: false
 
 calib:
   ratios: [1.0, 1.5, 2.0, 3.0, 5.0, 8.0]   # weight ratios for beta_eff probe

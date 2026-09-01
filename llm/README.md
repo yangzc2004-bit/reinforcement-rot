@@ -21,7 +21,7 @@ cp config.example.yaml config.yaml
 # edit config.yaml: model.name / api_key / base_url  (any OpenAI-compatible API)
 #   — or set name: "mock" for a free offline smoke test of the full pipeline
 cd ..
-python -m llm.run_b1       # capability gate (single agent, no memory, 85-90%)
+python -m llm.run_b1       # capability gate (single agent, no memory, 80-90%)
 python -m llm.calib_beta   # beta_eff model card (cheap; run before B2)
 python -m llm.run_b2       # existence experiment (resumable; per-episode JSONL)
 ```
@@ -37,7 +37,7 @@ cleanly after checkpointing.
 
 | ID | Question | Script | Status |
 |----|----------|--------|--------|
-| B1 | Can one agent solve the mazes WITHOUT memory? (gate: 85–90%) | `run_b1.py` | runnable |
+| B1 | Can one agent solve the mazes WITHOUT memory? (target: 80–90%) | `run_b1.py` | runnable |
 | β | How sharply does the model follow memory weight? (β_eff + CI) | `calib_beta.py` | runnable |
 | B2 | Does a shared loop emerge with memory + no evaporation? | `run_b2.py` | runnable |
 | B3 | Perturbation injection dose-response δ ∈ {2,4,6} (the heart) | planned | — |

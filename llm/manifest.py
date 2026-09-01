@@ -17,6 +17,7 @@ import platform
 import subprocess
 import sys
 import time
+from copy import deepcopy
 from pathlib import Path
 
 
@@ -39,14 +40,18 @@ def file_sha256(path):
 
 
 def new_manifest(experiment, config):
-    """Start a manifest for one experiment run. `config` must be the FULL dict."""
+    """Start a manifest, omitting credentials from the reproducibility record."""
+    safe_config = deepcopy(config)
+    model_config = safe_config.get('model')
+    if isinstance(model_config, dict) and 'api_key' in model_config:
+        model_config['api_key'] = '<redacted>'
     return {
         'experiment': experiment,
         'git_sha': _git_sha(),
         'python': sys.version.split()[0],
         'platform': platform.platform(),
         'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        'config': config,
+        'config': safe_config,
         'finished_utc': None,
         'runtime_s': None,
         'output_sha256': None,

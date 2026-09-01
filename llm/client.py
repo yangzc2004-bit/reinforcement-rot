@@ -30,7 +30,8 @@ class CallLimitExceeded(RuntimeError):
 
 class ChatClient:
     def __init__(self, model, api_key, base_url, temperature=0.0, max_tokens=64,
-                 timeout=120, max_retries=5, max_calls=None, log_path=None):
+                 timeout=120, max_retries=5, max_calls=None, log_path=None,
+                 thinking=None, request_interval=0.0):
         self.model = model
         self.api_key = api_key
         self.base_url = base_url.rstrip('/')
@@ -43,6 +44,9 @@ class ChatClient:
         self.n_calls = 0      # successful completions only
         self.n_tokens = 0
         self.n_errors = 0
+        self.thinking = thinking
+        self.request_interval = max(0.0, float(request_interval))
+        self._last_attempt_at = None
         self._log = open(log_path, 'a') if log_path else None
 
     def close(self):
@@ -56,7 +60,7 @@ class ChatClient:
             self._log.flush()
 
     def chat(self, system, user, max_tokens=None):
-        body = json.dumps({
+        payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
@@ -64,13 +68,23 @@ class ChatClient:
             ],
             "temperature": self.temperature,
             "max_tokens": max_tokens or self.max_tokens,
-        }).encode()
+        }
+        if self.thinking is not None:
+            payload["thinking"] = {
+                "type": "enabled" if self.thinking else "disabled"
+            }
+        body = json.dumps(payload).encode()
         t0 = time.time()
         last_err = None
         for attempt in range(self.max_retries + 1):
             if self.max_calls is not None and self.n_attempts >= self.max_calls:
                 raise CallLimitExceeded(
                     f'max_calls fuse tripped at {self.max_calls} request attempts')
+            if self._last_attempt_at is not None:
+                elapsed = time.monotonic() - self._last_attempt_at
+                if elapsed < self.request_interval:
+                    time.sleep(self.request_interval - elapsed)
+            self._last_attempt_at = time.monotonic()
             self.n_attempts += 1
             try:
                 req = urllib.request.Request(
@@ -148,10 +162,20 @@ def from_config(cfg):
     m = cfg['model']
     if m.get('name', '').lower() == 'mock':
         return MockClient(seed=cfg.get('maze', {}).get('seed', 0))
+    model_name = m['name'].lower()
+    # DeepSeek V4 enables thinking by default; disable it unless explicitly
+    # requested. Other OpenAI-compatible providers receive no vendor field.
+    thinking = m.get('thinking')
+    if thinking is None and model_name.startswith('deepseek'):
+        thinking = False
+    if not model_name.startswith('deepseek'):
+        thinking = None
     return ChatClient(model=m['name'], api_key=m['api_key'], base_url=m['base_url'],
                       temperature=m.get('temperature', 0.0),
                       max_tokens=m.get('max_tokens', 64),
                       timeout=m.get('timeout', 120),
                       max_retries=m.get('max_retries', 5),
                       max_calls=m.get('max_calls'),
-                      log_path=m.get('log_path'))
+                      log_path=m.get('log_path'),
+                      thinking=thinking,
+                      request_interval=m.get('request_interval', 0.0))

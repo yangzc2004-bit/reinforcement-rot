@@ -15,6 +15,10 @@ Definitions (operational, frozen 2026-08):
                     the path visits a cell OUTSIDE the trap's loop cells.
   escape_time     : escape_index - entry_index; None if never trapped or never escaped.
   cycle_rate      : fraction of step indices lying inside any detected loop segment.
+  oscillation_rate: fraction of steps inside a sustained two-cell alternation
+                    A-B-A-B-A... of at least four moves (two full periods).
+                    This is reported separately from loop/mill metrics because
+                    an edge backtrack is not a topological ring.
   excess_over_shortest : successful episodes only — steps minus the planted shortest.
   budget_exhaustion    : failed episodes only — steps burned before the budget died.
   mill_rate       : fraction of (maze, agent) pairs that share a canonical loop
@@ -94,6 +98,32 @@ def _trap_episode(loops, path):
     return None, None, None
 
 
+def _two_cell_oscillation(path):
+    """Return (step_fraction, longest_run_steps) for sustained A-B alternation.
+
+    A qualifying run contains at least five cells / four moves:
+    A-B-A-B-A. A single immediate backtrack A-B-A is exploration, not a
+    sustained oscillation.
+    """
+    path = [tuple(c) for c in path]
+    marked_steps = set()
+    longest = 0
+    i = 0
+    while i + 4 < len(path):
+        if (path[i] == path[i + 2] == path[i + 4]
+                and path[i + 1] == path[i + 3]
+                and path[i] != path[i + 1]):
+            end = i + 4
+            while end + 1 < len(path) and path[end + 1] == path[end - 1]:
+                end += 1
+            marked_steps.update(range(i, end))
+            longest = max(longest, end - i)
+            i = end
+        else:
+            i += 1
+    return len(marked_steps) / max(1, len(path) - 1), longest
+
+
 def episode_stats(traj):
     path = traj['path']
     loops = extract_loops(path)
@@ -101,9 +131,12 @@ def episode_stats(traj):
     for l in loops:
         in_loop.update(range(l['t_entry'], l['t_close']))
     cycle_rate = len(in_loop) / max(1, len(path) - 1)
+    oscillation_rate, longest_oscillation = _two_cell_oscillation(path)
     entry, exit_idx, trap_canon = _trap_episode(loops, path)
     return dict(
         cycle_rate=cycle_rate,
+        oscillation_rate=oscillation_rate,
+        longest_oscillation=longest_oscillation,
         loop_canons=[l['canon'] for l in loops],
         excess_over_shortest=(traj['steps'] - traj['shortest']) if traj['success'] else None,
         budget_exhaustion=None if traj['success'] else traj['steps'],
@@ -151,6 +184,12 @@ def population_stats(trajs):
     return dict(
         n_episodes=len(eps),
         cycle_rate=sum(e['cycle_rate'] for e in eps) / len(eps),
+        oscillation_rate=sum(e['oscillation_rate'] for e in eps) / len(eps),
+        oscillation_episode_rate=(
+            sum(e['longest_oscillation'] > 0 for e in eps) / len(eps)
+        ),
+        longest_oscillation=max(
+            (e['longest_oscillation'] for e in eps), default=0),
         excess_over_shortest=sum(succ) / len(succ) if succ else None,
         budget_exhaustion=sum(fail) / len(fail) if fail else None,
         mill_rate=len(milling) / n_pairs,

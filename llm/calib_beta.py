@@ -23,6 +23,7 @@ Uses: llm/config.yaml (model + calib section)
 """
 import json
 import math
+import os
 import random
 import re
 from pathlib import Path
@@ -119,7 +120,8 @@ def main():
         client.close()
     rs = [r for r in ratios if raw.get(r)]
     if not rs:
-        out = Path(__file__).parent / 'calib_beta_results.json'
+        out = Path(os.environ.get(
+            'LLM_CALIB_OUTPUT', Path(__file__).parent / 'calib_beta_results.json'))
         out.write_text(json.dumps(dict(error='no completed ratios',
                                        interrupted=interrupted,
                                        error_message=error_message,
@@ -151,7 +153,8 @@ def main():
     print("reference: beta=0 ignores weight; beta=1 follows weight linearly; "
           "beta>2 is superlinear (L2's mill-forming regime)")
 
-    out = Path(__file__).parent / 'calib_beta_results.json'
+    out = Path(os.environ.get(
+        'LLM_CALIB_OUTPUT', Path(__file__).parent / 'calib_beta_results.json'))
     out.write_text(json.dumps(dict(
         ratios=rs, follow_rates=ps, n_trials=n_trials,
         n_trials_requested=n_trials,

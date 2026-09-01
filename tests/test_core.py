@@ -12,7 +12,7 @@ from llm.maze import Maze
 from llm.memory import SharedMemory
 from llm.metrics import population_stats, episode_stats, extract_loops
 from llm.client import MockClient, ChatClient, CallLimitExceeded
-from llm.agents import SolverAgent
+from llm.agents import SYSTEM, SolverAgent
 
 
 def traj(agent, rnd, path, seed=0, success=False, illegal=0):
@@ -34,6 +34,11 @@ class TestMaze(unittest.TestCase):
     def test_delta_must_be_even(self):
         with self.assertRaises(ValueError):
             Maze(size=15, delta=3, seed=0)
+
+    def test_small_calibration_maze_keeps_controlled_cycles(self):
+        maze = Maze(size=6, delta=2, ring=True, seed=0,
+                    min_shortest=10, max_backbone=10, neck_min_dist=2)
+        self.assertEqual(maze.shortest_path_len(), 10)
 
     def test_start_not_in_ring(self):
         m = Maze(size=15, delta=4, ring=True, seed=7)
@@ -77,6 +82,19 @@ class TestLoopErasure(unittest.TestCase):
         self.assertTrue(e['escaped'])
         self.assertIsNotNone(e['escape_time'])
 
+    def test_sustained_two_cell_oscillation_is_separate_from_ring_loop(self):
+        p = [(0, 0), (0, 1), (0, 0), (0, 1), (0, 0)]
+        e = episode_stats(traj(0, 0, p))
+        self.assertEqual(e['cycle_rate'], 0.0)
+        self.assertEqual(e['oscillation_rate'], 1.0)
+        self.assertEqual(e['longest_oscillation'], 4)
+
+    def test_single_backtrack_is_not_sustained_oscillation(self):
+        p = [(0, 0), (0, 1), (0, 0), (1, 0)]
+        e = episode_stats(traj(0, 0, p))
+        self.assertEqual(e['oscillation_rate'], 0.0)
+        self.assertEqual(e['longest_oscillation'], 0)
+
 
 class TestMemory(unittest.TestCase):
     def test_reinforce_keeps_text_history(self):
@@ -108,6 +126,40 @@ class TestMemory(unittest.TestCase):
             m.save(p)
             m2 = SharedMemory.load(p, lam=0.9)
         self.assertEqual(m2.entries, m.entries)
+
+    def test_mechanical_writes_are_counted_separately(self):
+        class LineMaze:
+            start = (0, 0)
+            goal = (0, 2)
+
+            def open_dirs(self, cell):
+                return {
+                    (0, 0): ['E'],
+                    (0, 1): ['E', 'W'],
+                    (0, 2): ['W'],
+                }[cell]
+
+            def move(self, cell, direction):
+                delta = {'E': (0, 1), 'W': (0, -1)}[direction]
+                return cell[0] + delta[0], cell[1] + delta[1]
+
+            def shortest_path_len(self):
+                return 2
+
+        class EastClient:
+            def chat(self, system, user, max_tokens=None):
+                return 'MOVE: E'
+
+        memory = SharedMemory(lam=1.0)
+        result = SolverAgent(
+            EastClient(), LineMaze(), memory=memory,
+            write_rule='success_only',
+        ).run(max_steps=5)
+        self.assertTrue(result['success'])
+        self.assertEqual(result['memory_writes'], 2)
+        self.assertEqual(result['mechanical_writes'], 2)
+        self.assertEqual(result['authored_writes'], 0)
+        self.assertEqual(result['notes_written'], 0)
 
 
 class TestTrapConsecutiveRuns(unittest.TestCase):
@@ -208,7 +260,85 @@ class TestJsonlCorruptTail(unittest.TestCase):
                 b2.EPISODES_LOG = old
 
 
+class TestB2Conditions(unittest.TestCase):
+    def test_no_memory_and_shared_records_have_distinct_checkpoint_keys(self):
+        import llm.run_b2 as b2
+
+        base = dict(maze_seed=7, round_retention=None, round=0,
+                    agent=0, traj={})
+        no_memory = dict(base, memory_condition='none')
+        shared = dict(base, memory_condition='shared')
+        self.assertNotEqual(b2._episode_key(no_memory),
+                            b2._episode_key(shared))
+
+    def test_no_memory_control_is_enabled_by_default(self):
+        import llm.run_b2 as b2
+
+        conditions = b2._conditions(dict(round_retentions=[1.0, 0.85]))
+        self.assertEqual(conditions[0], {
+            'memory_condition': 'none',
+            'round_retention': None,
+        })
+        self.assertEqual(len(conditions), 3)
+
+
 class TestClientFuse(unittest.TestCase):
+    def test_deepseek_thinking_is_disabled(self):
+        from unittest import mock
+
+        captured = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    'choices': [{'message': {'content': 'MOVE: N'}}],
+                    'usage': {'total_tokens': 3},
+                }).encode()
+
+        def fake_urlopen(req, timeout):
+            captured['body'] = json.loads(req.data.decode())
+            return Response()
+
+        c = ChatClient(model='deepseek-v4-flash', api_key='x',
+                       base_url='http://example.test', thinking=False)
+        with mock.patch('urllib.request.urlopen', side_effect=fake_urlopen):
+            c.chat('system', 'user')
+        self.assertEqual(captured['body']['thinking'], {'type': 'disabled'})
+
+    def test_non_deepseek_provider_does_not_receive_thinking_field(self):
+        from unittest import mock
+
+        captured = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    'choices': [{'message': {'content': 'MOVE: N'}}],
+                    'usage': {},
+                }).encode()
+
+        def fake_urlopen(req, timeout):
+            captured['body'] = json.loads(req.data.decode())
+            return Response()
+
+        c = ChatClient(model='some-openai-compatible-model', api_key='x',
+                       base_url='http://example.test')
+        with mock.patch('urllib.request.urlopen', side_effect=fake_urlopen):
+            c.chat('system', 'user')
+        self.assertNotIn('thinking', captured['body'])
+
     def test_max_calls_fuse(self):
         c = ChatClient(model='x', api_key='x', base_url='http://localhost:0',
                        max_calls=0)
@@ -244,6 +374,93 @@ class TestMockEndToEnd(unittest.TestCase):
         s = population_stats([t])
         self.assertIn('mill_rate', s)
         self.assertIn('silence', s)
+
+
+class TestNavigationLedger(unittest.TestCase):
+    def test_prompt_exposes_tried_untried_and_backtrack(self):
+        maze = Maze(size=15, delta=4, ring=True, seed=0)
+        agent = SolverAgent(MockClient(seed=0), maze, memory=None,
+                            navigation_ledger=True)
+        cell = (1, 0)
+        prompt = agent._prompt(
+            cell,
+            visited={(0, 0), cell},
+            attempted={((1, 0), 'N')},
+            parents={cell: (0, 0)},
+            path=[(0, 0), cell],
+        )
+        self.assertIn('TRIED_OPEN: N', prompt)
+        self.assertIn('UNTRIED_OPEN: E', prompt)
+        self.assertIn('BACKTRACK: N', prompt)
+        self.assertIn('RECENT_PATH: 0,0 -> 1,0', prompt)
+        self.assertIn('NAV_RULE:', prompt)
+
+    def test_visit_only_prompt_omits_navigation_ledger(self):
+        maze = Maze(size=15, delta=4, ring=True, seed=0)
+        agent = SolverAgent(MockClient(seed=0), maze, memory=None,
+                            breadcrumbs=True, navigation_ledger=False,
+                            navigation_guard=False)
+        prompt = agent._prompt(
+            (1, 0),
+            visited={(0, 0), (1, 0)},
+            attempted={((1, 0), 'N')},
+            parents={(1, 0): (0, 0)},
+            path=[(0, 0), (1, 0)],
+        )
+        self.assertIn('VISITED:', prompt)
+        self.assertIn('0,0 -> 1,0', prompt)
+        self.assertIn('NEIGHBORS:', prompt)
+        self.assertNotIn('TRIED_OPEN:', prompt)
+        self.assertNotIn('UNTRIED_OPEN:', prompt)
+        self.assertNotIn('BACKTRACK:', prompt)
+        self.assertNotIn('NAV_RULE:', prompt)
+        self.assertIn('loop-erase VISITED', SYSTEM)
+        self.assertNotIn('reversing your latest move', SYSTEM)
+
+    def test_visit_only_prompt_preserves_chronological_revisits(self):
+        maze = Maze(size=15, delta=4, ring=True, seed=0)
+        agent = SolverAgent(MockClient(seed=0), maze, memory=None,
+                            breadcrumbs=True, navigation_ledger=False,
+                            navigation_guard=False)
+        prompt = agent._prompt(
+            (1, 0),
+            visited={(0, 0), (1, 0)},
+            path=[(0, 0), (1, 0), (0, 0), (1, 0)],
+        )
+        self.assertIn(
+            'VISITED: (oldest->newest) 0,0 -> 1,0 -> 0,0 -> 1,0',
+            prompt,
+        )
+        self.assertNotIn('RECENT_PATH:', prompt)
+
+    def test_pilot_stagnation_detector_does_not_change_moves(self):
+        class AlwaysSouth:
+            n_calls = 0
+            n_attempts = 0
+            n_tokens = 0
+            n_errors = 0
+
+            def chat(self, system, user, max_tokens=None):
+                self.n_calls += 1
+                self.n_attempts += 1
+                return 'MOVE: S'
+
+        maze = Maze(size=15, delta=4, ring=True, seed=0)
+        result = SolverAgent(
+            AlwaysSouth(), maze, memory=None, stagnation_repeats=3
+        ).run(max_steps=300, maze_seed=0)
+        self.assertTrue(result['stagnation_abort'])
+        self.assertLess(result['steps'], 300)
+        self.assertEqual(result['navigation_overrides'], 0)
+
+    def test_navigation_guard_avoids_visited_cells(self):
+        maze = Maze(size=15, delta=4, ring=True, seed=0)
+        client = MockClient(seed=0)
+        agent = SolverAgent(client, maze, memory=None,
+                            navigation_guard=True)
+        result = agent.run(max_steps=300, maze_seed=0)
+        self.assertTrue(result['success'])
+        self.assertGreater(result['navigation_overrides'], 0)
 
 
 if __name__ == '__main__':

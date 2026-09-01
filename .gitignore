@@ -1,0 +1,14 @@
+llm/config.yaml
+llm/api_calls.jsonl
+llm/b1_console.log
+llm/b2_console.log
+llm/*.manifest.json
+llm/campaign/
+llm/campaign_visit_only/
+llm/campaign_visit_only_v*/
+llm/campaign_launcher.log
+llm/campaign_visit_only_launcher.log
+llm/campaign_visit_only_v*_launcher.log
+llm/__pycache__/
+tests/__pycache__/
+.pytest_cache/

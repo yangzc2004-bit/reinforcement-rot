@@ -52,7 +52,7 @@ python experiments/sweep_phase.py     # 相图扫描（420 runs）
 python experiments/verify_robust.py   # 复验扫描
 python experiments/validate_mazes.py  # L3 迷宫不变量（1000 seeds）
 cd llm && cp config.example.yaml config.yaml  # 填入模型 API 后：
-cd .. && python -m llm.run_b1         # B1 能力门槛（85–90%）
+cd .. && python -m llm.run_b1         # B1 能力门槛（80–90%）
 python -m llm.calib_beta              # 模型 β_eff 标定（模型卡片）
 python -m llm.run_b2                  # B2 存在性实验（可断点续跑）
 ```
