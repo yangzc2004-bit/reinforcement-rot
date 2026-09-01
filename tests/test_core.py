@@ -45,6 +45,22 @@ class TestMaze(unittest.TestCase):
         self.assertNotIn(m.start, m.ring_cells)
         self.assertNotIn(m.goal, m.ring_cells)
 
+    def test_each_fill_component_has_one_controlled_root(self):
+        m = Maze(size=10, delta=2, ring=True, seed=7,
+                 min_shortest=18, max_backbone=18, neck_min_dist=5)
+        self.assertEqual(len(m.fill_components), len(m.fill_roots))
+        for component, root in zip(m.fill_components, m.fill_roots):
+            cells = set(component)
+            external_edges = [
+                (cell, m.move(cell, direction))
+                for cell in cells
+                for direction in m.open_dirs(cell)
+                if m.move(cell, direction) not in cells
+            ]
+            self.assertEqual(len(external_edges), 1)
+            self.assertEqual(frozenset(external_edges[0]),
+                             frozenset((root['root'], root['anchor'])))
+
 
 class TestMillRate(unittest.TestCase):
     def test_same_agent_two_rounds_is_not_a_mill(self):

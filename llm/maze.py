@@ -20,8 +20,11 @@ Construction (exactly two cycles — cyclomatic number 2):
   3. RING: a dangling rectangular loop attached to the backbone at the single
      neck cell N via a short corridor. Entrance == exit == the neck. The start
      cell is NEVER part of the ring assembly.
-  4. FILL: all remaining cells are attached by a randomized-Prim spanning
-     process (dead-end branches; they cannot create shortcuts).
+  4. FILL: each remaining free-space component is attached to the controlled
+     graph by EXACTLY ONE root edge, then spanned internally by randomized
+     Prim. The root prefers a step away from the goal. This keeps filler cells
+     reachable without creating many irrelevant, geometry-attractive exits
+     from the backbone.
 
 Structural invariants (asserted at construction; experiments/validate_mazes.py
 re-checks them over 1000 seeds):
@@ -231,36 +234,84 @@ class Maze:
             if self.neck is None:
                 raise MazeConstructionError('ring failed')
 
-        # 4. spanning fill (randomized Prim): dead-end branches only.
-        # Anchors are backbone + detour cells ONLY — never the ring assembly —
-        # so the ring keeps exactly one external edge (the neck).
-        inmaze = set(occupied)
-        anchors = set(self.backbone) | set(self.detour_cells)
+        # 4. Component-rooted fill. The old multi-source Prim exposed many
+        # random filler entrances directly on the backbone. Those entrances
+        # dominated B1 failures even though filler topology is not a scientific
+        # variable. Each free-space component now gets exactly one root edge.
+        backbone_cells = set(self.backbone)
+        anchors = backbone_cells | set(self.detour_cells)
         if ring:
-            anchors -= set(self.corridor_cells)  # corridor is assembly-adjacent
+            anchors -= set(self.corridor_cells)
             anchors.discard(self.neck)
-        frontier = []
+        remaining = ({(r, c) for r in range(size) for c in range(size)}
+                     - set(occupied))
+        components = []
+        while remaining:
+            seed = min(remaining)
+            comp = {seed}
+            q = deque([seed])
+            remaining.remove(seed)
+            while q:
+                u = q.popleft()
+                for dr, dc in DIRS.values():
+                    v = (u[0] + dr, u[1] + dc)
+                    if v in remaining:
+                        remaining.remove(v)
+                        comp.add(v)
+                        q.append(v)
+            components.append(comp)
 
-        def add_frontier(cell):
-            for d, (dr, dc) in DIRS.items():
-                v = (cell[0] + dr, cell[1] + dc)
-                if 0 <= v[0] < size and 0 <= v[1] < size and v not in inmaze:
-                    frontier.append((v, cell, d))
+        self.fill_components = [sorted(comp) for comp in components]
+        self.fill_roots = []
+        for comp in components:
+            options = []
+            for v in sorted(comp):
+                for d_from_v, (dr, dc) in DIRS.items():
+                    u = (v[0] + dr, v[1] + dc)
+                    if u not in anchors:
+                        continue
+                    d = OPP[d_from_v]  # direction anchor u -> filler root v
+                    goal_delta = (
+                        abs(v[0] - self.goal[0]) + abs(v[1] - self.goal[1])
+                        - abs(u[0] - self.goal[0]) - abs(u[1] - self.goal[1])
+                    )
+                    # Prefer a root step away from G; then prefer detour over
+                    # backbone so filler is less likely to distract the main
+                    # capability path.
+                    score = (goal_delta, int(u not in backbone_cells))
+                    options.append((score, u, v, d, goal_delta))
+            if not options:
+                raise MazeConstructionError('fill component has no controlled anchor')
+            best = max(score for score, *_ in options)
+            choices = [o for o in options if o[0] == best]
+            _, anchor, root, d, goal_delta = rng.choice(choices)
+            self._open(anchor, root, d)
+            self.fill_roots.append(dict(anchor=anchor, root=root,
+                                        goal_delta=goal_delta,
+                                        size=len(comp)))
 
-        for c in list(anchors):
-            add_frontier(c)
-        while frontier:
-            k = rng.randrange(len(frontier))
-            v, u, d = frontier[k]
-            frontier[k] = frontier[-1]
-            frontier.pop()
-            if v in inmaze:
-                continue
-            self._open(u, v, d)  # d is the direction u -> v (u already in-maze)
-            inmaze.add(v)
-            add_frontier(v)
-        if len(inmaze) != size * size:
-            raise MazeConstructionError('fill incomplete')
+            grown = {root}
+            frontier = []
+
+            def add_component_frontier(cell):
+                for direction, (dr, dc) in DIRS.items():
+                    nxt = (cell[0] + dr, cell[1] + dc)
+                    if nxt in comp and nxt not in grown:
+                        frontier.append((nxt, cell, direction))
+
+            add_component_frontier(root)
+            while frontier:
+                k = rng.randrange(len(frontier))
+                v, u, direction = frontier[k]
+                frontier[k] = frontier[-1]
+                frontier.pop()
+                if v in grown:
+                    continue
+                self._open(u, v, direction)
+                grown.add(v)
+                add_component_frontier(v)
+            if grown != comp:
+                raise MazeConstructionError('fill component incomplete')
 
     @staticmethod
     def _dir_between(u, v):
