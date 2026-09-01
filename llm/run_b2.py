@@ -104,7 +104,8 @@ def main():
                      max_backbone=mz.get('max_backbone', 60),
                      neck_min_dist=mz.get('neck_min_dist', 6),
                      max_corridor=mz.get('max_corridor', 4),
-                     deceptive_fill_roots=mz.get('deceptive_fill_roots', 0))
+                     deceptive_fill_roots=mz.get('deceptive_fill_roots', 0),
+                     ring_entry_bias=mz.get('ring_entry_bias', 'any'))
              for k in range(b2['n_mazes'])}
 
     done = _load_done()

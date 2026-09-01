@@ -50,12 +50,15 @@ class MazeConstructionError(RuntimeError):
 class Maze:
     def __init__(self, size=15, delta=4, ring=True, seed=0, min_shortest=30,
                  max_backbone=60, neck_min_dist=6, max_corridor=4,
-                 deceptive_fill_roots=0, max_attempts=300):
+                 deceptive_fill_roots=0, ring_entry_bias='any',
+                 max_attempts=300):
         if delta % 2 != 0:
             raise ValueError('delta must be EVEN: on a bipartite grid two routes '
                              'between the same endpoints differ by an even number')
         if deceptive_fill_roots not in (0, 1):
             raise ValueError('deceptive_fill_roots currently supports only 0 or 1')
+        if ring_entry_bias not in ('any', 'toward', 'away'):
+            raise ValueError("ring_entry_bias must be 'any', 'toward', or 'away'")
         self.size = size
         self.delta = delta
         self.start = (0, 0)
@@ -64,8 +67,10 @@ class Maze:
         for _ in range(max_attempts):
             try:
                 self._build(rng, delta, ring, min_shortest, max_backbone,
-                            neck_min_dist, max_corridor, deceptive_fill_roots)
-                self._validate(delta, ring, min_shortest, deceptive_fill_roots)
+                            neck_min_dist, max_corridor, deceptive_fill_roots,
+                            ring_entry_bias)
+                self._validate(delta, ring, min_shortest, deceptive_fill_roots,
+                               ring_entry_bias)
                 return
             except MazeConstructionError:
                 continue
@@ -133,7 +138,8 @@ class Maze:
 
     # ------------------------------------------------------------------ build
     def _build(self, rng, delta, ring, min_shortest, max_backbone,
-               neck_min_dist, max_corridor, deceptive_fill_roots):
+               neck_min_dist, max_corridor, deceptive_fill_roots,
+               ring_entry_bias):
         size = self.size
         self.walls = {(r, c): set(DIRS) for r in range(size) for c in range(size)}
 
@@ -182,6 +188,7 @@ class Maze:
         # 3. dangling single-neck ring (rectangular loop + short corridor)
         self.ring_cells, self.neck, self.corridor_cells = [], None, []
         self.ring_interior = []
+        self.ring_entry_goal_delta = None
         if ring:
             neck_lo = max(neck_min_dist, 2)
             neck_hi = len(bb) - neck_min_dist
@@ -203,8 +210,23 @@ class Maze:
                 # corridor: any valid length 1..max_corridor with right parity
                 cor = None
                 for ncor in rng.sample(range(1, max_corridor + 1), max_corridor):
-                    cor = self._bump_path(rng, frozenset(occupied | (set(perim) - {E})),
-                                          N, E, ncor, max_restarts=6, max_tries=400)
+                    candidate = self._bump_path(
+                        rng, frozenset(occupied | (set(perim) - {E})),
+                        N, E, ncor, max_restarts=6, max_tries=400)
+                    if candidate is None:
+                        continue
+                    first = candidate[1]
+                    entry_delta = (
+                        abs(first[0] - self.goal[0])
+                        + abs(first[1] - self.goal[1])
+                        - abs(N[0] - self.goal[0])
+                        - abs(N[1] - self.goal[1])
+                    )
+                    if ring_entry_bias == 'toward' and entry_delta >= 0:
+                        continue
+                    if ring_entry_bias == 'away' and entry_delta <= 0:
+                        continue
+                    cor = candidate
                     if cor is not None:
                         break
                 if cor is None:
@@ -215,6 +237,7 @@ class Maze:
                 self.ring_cells = list(perim)
                 self.neck = N
                 self.corridor_cells = cor[1:-1]
+                self.ring_entry_goal_delta = entry_delta
                 # rectangle interior becomes part of the ring assembly: it is
                 # reachable only THROUGH the ring, so assembly-external edges
                 # stay exactly one (the neck). Interior cells are connected by
@@ -356,7 +379,8 @@ class Maze:
         self.walls[v].discard(OPP[d])
 
     # ------------------------------------------------------------- validate
-    def _validate(self, delta, ring, min_shortest, deceptive_fill_roots):
+    def _validate(self, delta, ring, min_shortest, deceptive_fill_roots,
+                  ring_entry_bias):
         size = self.size
         # connectivity + edge count -> cyclomatic number
         n_edges = sum(len(self.open_dirs(c)) for c in self.walls) // 2
@@ -392,6 +416,10 @@ class Maze:
             ext = sum(1 for c in assembly for d in self.open_dirs(c)
                       if self.move(c, d) not in assembly)
             assert ext == 1, f'ring assembly has {ext} external edges, want 1'
+            if ring_entry_bias == 'toward':
+                assert self.ring_entry_goal_delta < 0
+            elif ring_entry_bias == 'away':
+                assert self.ring_entry_goal_delta > 0
         assert sum(root['deceptive'] for root in self.fill_roots) == deceptive_fill_roots
 
     def _bfs_blocked(self, src, dst, blocked):

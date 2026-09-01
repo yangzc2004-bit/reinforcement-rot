@@ -69,6 +69,16 @@ class TestMaze(unittest.TestCase):
         self.assertEqual(len(deceptive), 1)
         self.assertLess(deceptive[0]['goal_delta'], 0)
 
+    def test_ring_entry_bias_is_enforced(self):
+        toward = Maze(size=10, delta=2, ring=True, seed=7,
+                      min_shortest=18, max_backbone=18, neck_min_dist=5,
+                      ring_entry_bias='toward')
+        away = Maze(size=10, delta=2, ring=True, seed=7,
+                    min_shortest=18, max_backbone=18, neck_min_dist=5,
+                    ring_entry_bias='away')
+        self.assertLess(toward.ring_entry_goal_delta, 0)
+        self.assertGreater(away.ring_entry_goal_delta, 0)
+
 
 class TestMillRate(unittest.TestCase):
     def test_same_agent_two_rounds_is_not_a_mill(self):
