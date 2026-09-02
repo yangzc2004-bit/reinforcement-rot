@@ -65,9 +65,14 @@ def probe_once(client, rng, r):
 
 
 def fit_beta(rs, ps):
-    """Least-squares fit of P(r) = r^b/(r^b+1) over a beta grid."""
+    """Least-squares fit over beta in [0, 32].
+
+    The previous [0, 8] grid silently turned a saturated estimate into the
+    false claim beta_eff == 8. A result on this grid is still a lower bound
+    when the optimum lands at 32.
+    """
     best, best_err = 0.0, float('inf')
-    for i in range(0, 801):
+    for i in range(0, 3201):
         b = i / 100.0
         err = sum((p - (r ** b) / (r ** b + 1.0)) ** 2 for r, p in zip(rs, ps))
         if err < best_err:

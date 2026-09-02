@@ -60,7 +60,8 @@ b2:
   navigation_guard: false
 
 calib:
-  ratios: [1.0, 1.5, 2.0, 3.0, 5.0, 8.0]   # weight ratios for beta_eff probe
+  ratios: [1.0, 1.1, 1.25, 1.5, 2.0, 3.0, 5.0, 8.0, 16.0, 32.0]
+                                            # weight ratios for beta_eff probe
   n_trials: 30          # trials per ratio (more -> tighter CI)
   n_bootstrap: 200
   seed: 0
