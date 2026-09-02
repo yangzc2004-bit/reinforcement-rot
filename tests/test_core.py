@@ -79,6 +79,15 @@ class TestMaze(unittest.TestCase):
         self.assertLess(toward.ring_entry_goal_delta, 0)
         self.assertGreater(away.ring_entry_goal_delta, 0)
 
+    def test_backbone_turn_count_is_exact(self):
+        m = Maze(size=10, delta=2, ring=True, seed=11,
+                 min_shortest=18, max_backbone=18, neck_min_dist=5,
+                 backbone_turns=3)
+        directions = [
+            m._dir_between(a, b) for a, b in zip(m.backbone, m.backbone[1:])
+        ]
+        self.assertEqual(sum(a != b for a, b in zip(directions, directions[1:])), 3)
+
 
 class TestMillRate(unittest.TestCase):
     def test_same_agent_two_rounds_is_not_a_mill(self):

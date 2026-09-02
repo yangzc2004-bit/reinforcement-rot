@@ -50,6 +50,10 @@ def main():
         'B1_DECEPTIVE_FILL_ROOTS', mz.get('deceptive_fill_roots', 0)))
     ring_entry_bias = os.environ.get(
         'B1_RING_ENTRY_BIAS', mz.get('ring_entry_bias', 'any'))
+    backbone_turns_raw = os.environ.get(
+        'B1_BACKBONE_TURNS', mz.get('backbone_turns'))
+    backbone_turns = (int(backbone_turns_raw)
+                      if backbone_turns_raw not in (None, '') else None)
     navigation_guard = os.environ.get(
         'B1_NAVIGATION_GUARD',
         str(b1.get('navigation_guard', False)),
@@ -74,6 +78,7 @@ def main():
     manifest_cfg['b1']['seed_start'] = seed_start
     manifest_cfg['maze']['deceptive_fill_roots'] = deceptive_fill_roots
     manifest_cfg['maze']['ring_entry_bias'] = ring_entry_bias
+    manifest_cfg['maze']['backbone_turns'] = backbone_turns
     man = new_manifest('b1', manifest_cfg)
     out = Path(os.environ.get(
         'LLM_B1_OUTPUT', Path(__file__).parent / 'b1_results.json'))
@@ -110,7 +115,8 @@ def main():
                         neck_min_dist=mz.get('neck_min_dist', 6),
                         max_corridor=mz.get('max_corridor', 4),
                         deceptive_fill_roots=deceptive_fill_roots,
-                        ring_entry_bias=ring_entry_bias)
+                        ring_entry_bias=ring_entry_bias,
+                        backbone_turns=backbone_turns)
             agent = SolverAgent(client, maze, memory=None,
                                 breadcrumbs=b1.get('breadcrumbs', True),
                                 write_rule='none', agent_id=0,

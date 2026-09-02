@@ -9,8 +9,9 @@ Why controlled: the random-DFS version had three construct-validity defects —
 
 Construction (exactly two cycles — cyclomatic number 2):
   1. BACKBONE: a simple path S -> G of length >= min_shortest, built from the
-     monotone path by random plaquette bumps (+2 steps each). In the tree fill
-     this remains the UNIQUE S-G route, hence the BFS shortest path.
+     a controlled monotone path (optionally with an exact number of turns) or
+     random plaquette bumps (+2 steps each). In the tree fill this remains the
+     UNIQUE S-G route, hence the BFS shortest path.
   2. DETOUR: between two backbone cells A, B (backbone distance d_ab), a second
      internally-disjoint route of length EXACTLY d_ab + delta — the long lane,
      the L3 analog of L2's delta. NOTE: the grid is bipartite, so two routes
@@ -51,7 +52,7 @@ class Maze:
     def __init__(self, size=15, delta=4, ring=True, seed=0, min_shortest=30,
                  max_backbone=60, neck_min_dist=6, max_corridor=4,
                  deceptive_fill_roots=0, ring_entry_bias='any',
-                 max_attempts=300):
+                 backbone_turns=None, max_attempts=300):
         if delta % 2 != 0:
             raise ValueError('delta must be EVEN: on a bipartite grid two routes '
                              'between the same endpoints differ by an even number')
@@ -59,6 +60,8 @@ class Maze:
             raise ValueError('deceptive_fill_roots currently supports only 0 or 1')
         if ring_entry_bias not in ('any', 'toward', 'away'):
             raise ValueError("ring_entry_bias must be 'any', 'toward', or 'away'")
+        if backbone_turns is not None and backbone_turns < 0:
+            raise ValueError('backbone_turns must be non-negative or None')
         self.size = size
         self.delta = delta
         self.start = (0, 0)
@@ -68,7 +71,7 @@ class Maze:
             try:
                 self._build(rng, delta, ring, min_shortest, max_backbone,
                             neck_min_dist, max_corridor, deceptive_fill_roots,
-                            ring_entry_bias)
+                            ring_entry_bias, backbone_turns)
                 self._validate(delta, ring, min_shortest, deceptive_fill_roots,
                                ring_entry_bias)
                 return
@@ -142,7 +145,7 @@ class Maze:
     # ------------------------------------------------------------------ build
     def _build(self, rng, delta, ring, min_shortest, max_backbone,
                neck_min_dist, max_corridor, deceptive_fill_roots,
-               ring_entry_bias):
+               ring_entry_bias, backbone_turns):
         size = self.size
         self.walls = {(r, c): set(DIRS) for r in range(size) for c in range(size)}
 
@@ -150,7 +153,11 @@ class Maze:
         lo = min_shortest + (min_shortest % 2)
         hi = max_backbone - (max_backbone % 2)
         L = rng.choice(list(range(lo, hi + 1, 2)))
-        bb = self._bump_path(rng, frozenset(), self.start, self.goal, L)
+        md = abs(self.start[0] - self.goal[0]) + abs(self.start[1] - self.goal[1])
+        if backbone_turns is not None and L == md:
+            bb = self._monotone_path(rng, self.start, self.goal, backbone_turns)
+        else:
+            bb = self._bump_path(rng, frozenset(), self.start, self.goal, L)
         if bb is None:
             raise MazeConstructionError('backbone failed')
         self.backbone = bb
@@ -424,6 +431,63 @@ class Maze:
             elif ring_entry_bias == 'away':
                 assert self.ring_entry_goal_delta > 0
         assert sum(root['deceptive'] for root in self.fill_roots) == deceptive_fill_roots
+
+    @staticmethod
+    def _composition(total, parts, rng):
+        if parts < 1 or total < parts:
+            return None
+        if parts == 1:
+            return [total]
+        cuts = sorted(rng.sample(range(1, total), parts - 1))
+        points = [0] + cuts + [total]
+        return [b - a for a, b in zip(points, points[1:])]
+
+    def _monotone_path(self, rng, src, dst, turns):
+        """Generate an exact-length monotone path with exactly `turns` turns."""
+        dr, dc = dst[0] - src[0], dst[1] - src[1]
+        v_dir = 'S' if dr > 0 else 'N'
+        h_dir = 'E' if dc > 0 else 'W'
+        v_total, h_total = abs(dr), abs(dc)
+        if turns == 0:
+            if v_total and h_total:
+                return None
+            direction = v_dir if v_total else h_dir
+            return [src] + [
+                (src[0] + DIRS[direction][0] * i,
+                 src[1] + DIRS[direction][1] * i)
+                for i in range(1, max(v_total, h_total) + 1)
+            ]
+        runs = turns + 1
+        candidates = []
+        for first in (v_dir, h_dir):
+            run_dirs = [
+                first if i % 2 == 0
+                else (h_dir if first == v_dir else v_dir)
+                for i in range(runs)
+            ]
+            n_v = sum(d == v_dir for d in run_dirs)
+            n_h = sum(d == h_dir for d in run_dirs)
+            if v_total >= n_v and h_total >= n_h:
+                candidates.append((run_dirs, n_v, n_h))
+        if not candidates:
+            return None
+        run_dirs, n_v, n_h = rng.choice(candidates)
+        v_parts = self._composition(v_total, n_v, rng) if n_v else []
+        h_parts = self._composition(h_total, n_h, rng) if n_h else []
+        v_i = h_i = 0
+        path = [src]
+        cell = src
+        for direction in run_dirs:
+            length = (v_parts[v_i] if direction == v_dir else h_parts[h_i])
+            if direction == v_dir:
+                v_i += 1
+            else:
+                h_i += 1
+            dr_step, dc_step = DIRS[direction]
+            for _ in range(length):
+                cell = (cell[0] + dr_step, cell[1] + dc_step)
+                path.append(cell)
+        return path
 
     def _bfs_blocked(self, src, dst, blocked):
         dist = {src: 0}

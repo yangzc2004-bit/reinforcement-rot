@@ -31,6 +31,7 @@ maze:
   max_corridor: 4       # maximum neck-to-ring corridor length
   deceptive_fill_roots: 0  # B1 calibration: fixed toward-goal filler entrances
   ring_entry_bias: "any"   # any | toward | away, controls the scientific trap
+  backbone_turns: null     # exact turns when shortest path is Manhattan length
   seed: 0
 
 b1:
