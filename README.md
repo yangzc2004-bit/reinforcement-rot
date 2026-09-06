@@ -57,4 +57,4 @@ python -m llm.calib_beta              # 模型 β_eff 标定（模型卡片）
 python -m llm.run_b2                  # B2 存在性实验（可断点续跑）
 ```
 
-目标会议：ICLR。现象命名：Reinforcement Rot；机制命名：reinforcement without evaporation。
+现象命名：Reinforcement Rot；机制命名：reinforcement without evaporation。
